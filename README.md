@@ -36,7 +36,9 @@ Open http://localhost:3000.
 
 | Variable              | Purpose                                                                 |
 | --------------------- | ----------------------------------------------------------------------- |
-| `BLACKTHORN_BASE_URL` | URL of the Blackthorn client. Default `http://127.0.0.1:8000/v1`.       |
+| `BLACKTHORN_BASE_URL` | URL of your own Blackthorn client. Default `http://127.0.0.1:8000/v1`.  |
+| `BLACKTHORN_TOKEN`    | Blackthorn API key for the bundled client (hosted deployments).        |
+| `BLACKTHORN_HOST`     | Optional Blackthorn host for the bundled client.                        |
 | `BLACKTHORN_API_KEY`  | Optional bearer token, if the client sits behind an authenticating proxy. |
 | `BLACKTHORN_MODEL`    | Optional model id. Defaults to the first model the client lists.        |
 | `APP_PASSWORD`        | Shared access password. Required in production; empty locally = no gate. |
@@ -57,8 +59,21 @@ lib/auth.ts           password gate
 lib/blackthorn.ts     endpoint and model resolution
 ```
 
-## Deploying
+## Deploying (Vercel)
 
-A hosted deployment needs `BLACKTHORN_BASE_URL` to point at a Blackthorn client
-it can reach over the network (`127.0.0.1` only works on your own machine), plus
-`APP_PASSWORD`.
+Live at https://blackthorn-chat.vercel.app.
+
+On Vercel the build downloads the pinned Linux `blackthorn` client
+(`scripts/fetch-blackthorn.mjs`, checksum-verified) and the server routes start
+it on demand (`lib/client-process.ts`). Set two environment variables in the
+Vercel project:
+
+- `BLACKTHORN_TOKEN` – your Blackthorn API key
+- `APP_PASSWORD` – the shared access password
+
+```bash
+vercel deploy --prod
+```
+
+Alternatively, set `BLACKTHORN_BASE_URL` to a Blackthorn client you host
+yourself and leave `BLACKTHORN_TOKEN` unset.
