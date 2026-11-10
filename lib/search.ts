@@ -1,6 +1,7 @@
 /**
  * Web search for the model. Uses whichever provider has a key configured:
- * Brave (BRAVE_API_KEY) or Tavily (TAVILY_API_KEY). No key, no search.
+ * Brave (BRAVE_API_KEY) or Tavily (TAVILY_API_KEY). With both, Brave is used
+ * and Tavily is the backup when Brave fails. No key, no search.
  *
  * Search queries leave the encrypted path: they go to the provider in plaintext.
  */
@@ -11,8 +12,12 @@ export type SearchProvider = { id: "brave" | "tavily"; name: string };
 const MAX_RESULTS = 5;
 
 export function searchProvider(): SearchProvider | null {
-  if (process.env.BRAVE_API_KEY) return { id: "brave", name: "Brave Search" };
-  if (process.env.TAVILY_API_KEY) return { id: "tavily", name: "Tavily" };
+  const brave = Boolean(process.env.BRAVE_API_KEY);
+  const tavily = Boolean(process.env.TAVILY_API_KEY);
+  if (brave) {
+    return { id: "brave", name: tavily ? "Brave Search (Tavily as backup)" : "Brave Search" };
+  }
+  if (tavily) return { id: "tavily", name: "Tavily" };
   return null;
 }
 
@@ -91,7 +96,15 @@ async function tavily(query: string): Promise<SearchResult[]> {
 export async function webSearch(query: string): Promise<SearchResult[]> {
   const provider = searchProvider();
   if (!provider) throw new Error("no search provider configured");
-  return provider.id === "brave" ? brave(query) : tavily(query);
+  if (provider.id === "tavily") return tavily(query);
+  try {
+    return await brave(query);
+  } catch (cause) {
+    // Out of credit or rate limited: use Tavily when it is configured too.
+    if (!process.env.TAVILY_API_KEY) throw cause;
+    console.error("Brave Search failed, falling back to Tavily:", cause);
+    return tavily(query);
+  }
 }
 
 /** What the model reads back from a search. */

@@ -27,8 +27,8 @@ The model can search the web through a `web_search` tool when a search key is
 configured and the user leaves the "Web search" toggle on:
 
 - `TAVILY_API_KEY` – Tavily, free plan without a credit card.
-- `BRAVE_API_KEY` – Brave Search (metered, credit card required). Used instead
-  of Tavily when set.
+- `BRAVE_API_KEY` – Brave Search (metered, credit card required). Used first
+  when set, with Tavily as the backup if a Brave request fails.
 
 Search queries are sent to that provider in plaintext, outside Blackthorn's
 encryption. The model writes the query, the server runs it (`lib/search.ts`),
