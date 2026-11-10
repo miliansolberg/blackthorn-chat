@@ -25,12 +25,32 @@ export function upstreamHeaders(): Record<string, string> {
   return headers;
 }
 
-let cachedModel: { id: string; at: number } | null = null;
+export type ModelInfo = { id: string; name: string };
 
-/** BLACKTHORN_MODEL if set, otherwise the first model the client lists. */
-export async function resolveModel(): Promise<string> {
-  if (process.env.BLACKTHORN_MODEL) return process.env.BLACKTHORN_MODEL;
-  if (cachedModel && Date.now() - cachedModel.at < 5 * 60_000) return cachedModel.id;
+/** "qwen3.8-27b-bllm" -> "Qwen 3.8 27B" */
+export function displayName(id: string): string {
+  const parts = id.replace(/-bllm$/i, "").split(/[-_]/).filter(Boolean);
+  return parts
+    .map((part, index) => {
+      if (index === 0) {
+        const match = part.match(/^([a-z]+)([\d.]+)?$/i);
+        if (match) {
+          const family = match[1][0].toUpperCase() + match[1].slice(1);
+          return match[2] ? `${family} ${match[2]}` : family;
+        }
+      }
+      return /\d/.test(part) ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1);
+    })
+    .join(" ");
+}
+
+let cachedModels: { list: ModelInfo[]; at: number } | null = null;
+
+/** The models the client offers (BLACKTHORN_MODEL pins a single one). */
+export async function listModels(): Promise<ModelInfo[]> {
+  const pinned = process.env.BLACKTHORN_MODEL;
+  if (pinned) return [{ id: pinned, name: displayName(pinned) }];
+  if (cachedModels && Date.now() - cachedModels.at < 5 * 60_000) return cachedModels.list;
 
   const res = await fetch(`${await baseUrl()}/models`, {
     headers: upstreamHeaders(),
@@ -39,8 +59,17 @@ export async function resolveModel(): Promise<string> {
   });
   if (!res.ok) throw new Error(`model list failed with status ${res.status}`);
   const body = (await res.json()) as { data?: { id?: string }[] };
-  const id = body.data?.[0]?.id;
-  if (!id) throw new Error("the Blackthorn client listed no models");
-  cachedModel = { id, at: Date.now() };
-  return id;
+  const list = (body.data ?? [])
+    .map((model) => model.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0)
+    .map((id) => ({ id, name: displayName(id) }));
+  if (list.length === 0) throw new Error("the Blackthorn client listed no models");
+  cachedModels = { list, at: Date.now() };
+  return list;
+}
+
+/** The requested model if the client offers it, otherwise the first one. */
+export async function resolveModel(requested?: string): Promise<string> {
+  const models = await listModels();
+  return models.find((model) => model.id === requested)?.id ?? models[0].id;
 }

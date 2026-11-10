@@ -1,8 +1,12 @@
 # Blackthorn Chat
 
 A simple chat interface for [Arcium Blackthorn](https://www.arcium.com/blackthorn)
-encrypted inference. Next.js (App Router), streaming replies, markdown rendering
-and an optional shared-password gate.
+encrypted inference. Next.js (App Router), streaming replies, markdown rendering,
+a chat list saved in the browser, a model selector and an optional
+shared-password gate.
+
+Chat history is stored in the browser's localStorage only (unencrypted, per
+device); deleting a chat in the left panel removes it from there.
 
 ## How it reaches Blackthorn
 
@@ -54,9 +58,12 @@ app/
   api/chat/route.ts   streams chat completions from the Blackthorn client
   api/login/route.ts  password check, sets the session cookie
   api/session/route.ts  sign-in state and model name
-components/           App, Login, Chat (client components)
+components/           App, Login, Chat, Sidebar, ThinkingIndicator
 lib/auth.ts           password gate
-lib/blackthorn.ts     endpoint and model resolution
+lib/blackthorn.ts     endpoint and model list
+lib/client-process.ts runs the bundled client on hosted deployments
+lib/chats.ts          chat history in the browser's localStorage
+lib/stream.ts         stream parsing and steady text reveal
 ```
 
 ## Deploying (Vercel)

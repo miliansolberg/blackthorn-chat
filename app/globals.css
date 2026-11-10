@@ -10,6 +10,10 @@
   --accent: #6d45ff;
   --accent-text: #ffffff;
   --danger: #c0362c;
+  --wisp-1: #6d45ff;
+  --wisp-2: #1f9fd6;
+  --wisp-3: #a06bff;
+  --wisp-tip: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -23,6 +27,10 @@
     --accent: #8f72ff;
     --accent-text: #0c0c10;
     --danger: #ff7b6e;
+    --wisp-1: #9a82ff;
+    --wisp-2: #5fd0ff;
+    --wisp-3: #d2b8ff;
+    --wisp-tip: #ffffff;
   }
 }
 
@@ -116,4 +124,95 @@ body {
   border: 1px solid var(--border);
   padding: 0.35em 0.7em;
   text-align: left;
+}
+
+/* Thinking indicator: three wisps of air spiralling inward */
+.vortex-wisp {
+  fill: none;
+  stroke-linecap: round;
+  /* One dash of --len on a path normalised to 100; every layer of a wisp
+     shares the same head position, so the layers stack into a tapered gust. */
+  stroke-dasharray: var(--len) calc(100px - var(--len));
+  animation: vortex-travel 1.7s cubic-bezier(0.45, 0.1, 0.5, 0.92) infinite;
+}
+.vortex-spin {
+  transform-origin: 50% 50%;
+  animation: vortex-spin 5.5s linear infinite;
+}
+.thinking-vortex {
+  overflow: visible;
+  animation: vortex-breathe 2.6s ease-in-out infinite alternate;
+}
+.vortex-core {
+  transform-origin: 50% 50%;
+  animation: vortex-core 1.7s ease-in-out infinite alternate;
+}
+.thinking-text {
+  background: linear-gradient(
+    100deg,
+    var(--muted) 0%,
+    var(--muted) 38%,
+    var(--text) 50%,
+    var(--muted) 62%,
+    var(--muted) 100%
+  );
+  background-size: 240% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 2.4s linear infinite;
+}
+@keyframes vortex-travel {
+  from {
+    stroke-dashoffset: var(--len);
+  }
+  to {
+    stroke-dashoffset: calc(var(--len) - 100px);
+  }
+}
+@keyframes vortex-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes vortex-breathe {
+  from {
+    transform: scale(0.94);
+  }
+  to {
+    transform: scale(1.06);
+  }
+}
+@keyframes vortex-core {
+  from {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+@keyframes thinking-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -140% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vortex-wisp {
+    animation-duration: 5s;
+  }
+  .vortex-spin,
+  .thinking-vortex,
+  .vortex-core,
+  .thinking-text {
+    animation: none;
+  }
+  .thinking-text {
+    color: var(--muted);
+    background: none;
+  }
 }

@@ -53,7 +53,8 @@ export async function POST(request: NextRequest) {
 
   let upstream: Response;
   try {
-    payload.model = await resolveModel();
+    const requested = (body as { model?: unknown }).model;
+    payload.model = await resolveModel(typeof requested === "string" ? requested : undefined);
     upstream = await fetch(`${await baseUrl()}/chat/completions`, {
       method: "POST",
       headers: upstreamHeaders(),

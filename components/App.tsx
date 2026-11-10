@@ -8,7 +8,7 @@ type Session = {
   authed: boolean;
   gated: boolean;
   misconfigured: boolean;
-  model: string | null;
+  models: { id: string; name: string }[];
 };
 
 export function App() {
@@ -54,7 +54,7 @@ export function App() {
     );
   }
   if (!session.authed) return <Login onSuccess={refresh} />;
-  return <Chat model={session.model} gated={session.gated} onSignedOut={refresh} />;
+  return <Chat models={session.models} gated={session.gated} onSessionChange={refresh} />;
 }
 
 function Centered({ children }: { children?: React.ReactNode }) {
