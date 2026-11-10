@@ -49,11 +49,16 @@ and only that text is sent with the message; the original file is not uploaded.
 
 ## Dictation
 
-The microphone button dictates into the message box with the browser's speech
-recognition (`lib/dictation.ts`). On-device recognition is requested when the
-browser offers it; otherwise the audio goes to the browser vendor's speech
-service, outside Blackthorn's encryption. Browsers without speech recognition
-(such as Firefox) do not show the button.
+The microphone button records in the browser and transcribes on the device with
+Whisper through transformers.js in a web worker (`lib/dictation.ts`,
+`lib/whisper.worker.ts`). Audio is never uploaded. Text is inserted when the
+recording is stopped, not while speaking.
+
+- The dictation language is chosen in the Profile menu (the library cannot
+  detect it), defaulting to the browser's language.
+- English uses `onnx-community/whisper-base`; other languages use the larger
+  `onnx-community/whisper-small`. Model files are downloaded once from Hugging
+  Face and cached by the browser (about 450 MB for both together).
 
 ## What the assistant knows about itself
 

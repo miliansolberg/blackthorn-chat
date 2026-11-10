@@ -25,7 +25,12 @@ import {
   type PendingFile,
 } from "@/lib/attachments";
 import { createReveal, sseEvents } from "@/lib/stream";
-import { useDictation } from "@/lib/dictation";
+import {
+  DICTATION_LANGUAGES,
+  loadDictationLanguage,
+  saveDictationLanguage,
+  useDictation,
+} from "@/lib/dictation";
 import { ModelPicker } from "./ModelPicker";
 import { Sidebar } from "./Sidebar";
 import { ThinkingIndicator } from "./ThinkingIndicator";
@@ -76,18 +81,20 @@ export function Chat({
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Dictated words are appended to whatever was in the box when dictation began.
-  const dictationBaseRef = useRef("");
-  const dictation = useDictation((finalText, interimText) => {
-    setInput(`${dictationBaseRef.current}${finalText}${interimText}`.replace(/^\s+/, ""));
+  // Dictated words are added to the end of whatever is in the box.
+  const [dictationLanguage, setDictationLanguage] = useState(loadDictationLanguage);
+  const dictationLanguageName =
+    DICTATION_LANGUAGES.find((language) => language.code === dictationLanguage)?.name ?? "English";
+  const dictation = useDictation(dictationLanguage, (spoken) => {
+    setInput((current) => (current && !/\s$/.test(current) ? `${current} ${spoken}` : current + spoken));
     requestAnimationFrame(resizeInput);
+    inputRef.current?.focus();
   });
+  const recording = dictation.state === "recording";
 
   function toggleDictation() {
-    if (dictation.listening) return dictation.stop();
-    dictationBaseRef.current = input && !/\s$/.test(input) ? `${input} ` : input;
-    dictation.start();
-    inputRef.current?.focus();
+    if (recording) dictation.stop();
+    else dictation.start();
   }
 
   const abortRef = useRef<AbortController | null>(null);
@@ -169,7 +176,7 @@ export function Chat({
     const content = text.trim();
     const attachments = readyFiles;
     if ((!content && attachments.length === 0) || busy || reading || !model) return;
-    dictation.stop();
+    dictation.cancel();
 
     const record = touched(active ?? createChat(content || attachments[0].name), []);
     const chatId = record.id;
@@ -310,6 +317,11 @@ export function Chat({
         onNew={newChat}
         onDelete={deleteChat}
         onDeleteAll={deleteAllChats}
+        dictationLanguage={dictation.supported ? dictationLanguage : null}
+        onDictationLanguage={(code) => {
+          setDictationLanguage(code);
+          saveDictationLanguage(code);
+        }}
         onSignOut={signOut}
       />
 
@@ -449,7 +461,6 @@ export function Chat({
               rows={1}
               value={input}
               onChange={(event) => {
-                if (dictation.listening) dictation.stop(); // typing takes over
                 setInput(event.target.value);
                 resizeInput();
               }}
@@ -468,11 +479,19 @@ export function Chat({
               placeholder="Send a message"
               className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 outline-none placeholder:text-muted"
             />
-            {dictation.error && (
+            {dictation.error ? (
               <p role="alert" className="px-2 pb-1 text-xs text-danger">
                 {dictation.error}
               </p>
-            )}
+            ) : dictation.state !== "idle" ? (
+              <p role="status" className="px-2 pb-1 text-xs text-muted">
+                {recording
+                  ? `Listening in ${dictationLanguageName}… click the microphone again when you are done.`
+                  : dictation.downloading !== null
+                    ? `Downloading the speech model (first time only)… ${dictation.downloading}%`
+                    : "Transcribing on this device…"}
+              </p>
+            ) : null}
             <div className="mt-1 flex items-center gap-2">
               <input
                 ref={fileInputRef}
@@ -555,22 +574,21 @@ export function Chat({
                 <button
                   type="button"
                   onClick={toggleDictation}
-                  aria-pressed={dictation.listening}
-                  aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
+                  disabled={dictation.state === "transcribing"}
+                  aria-pressed={recording}
+                  aria-label={recording ? "Stop dictation" : "Dictate"}
                   title={
-                    dictation.listening
-                      ? dictation.onDevice
-                        ? "Listening (speech is recognised on this device). Click to stop."
-                        : "Listening (speech is recognised by your browser's speech service, outside Blackthorn's encryption). Click to stop."
-                      : "Dictate"
+                    recording
+                      ? "Recording. Click to stop and insert the text."
+                      : `Dictate in ${dictationLanguageName} (transcribed on this device; change the language in Profile)`
                   }
-                  className={`relative shrink-0 rounded-lg border p-2 ${
-                    dictation.listening
+                  className={`relative shrink-0 rounded-lg border p-2 disabled:opacity-50 ${
+                    recording
                       ? "border-text bg-text text-bg"
                       : "border-border text-muted hover:bg-surface-2 hover:text-text"
                   }`}
                 >
-                  {dictation.listening && (
+                  {recording && (
                     <span className="absolute -right-1 -top-1 size-2.5 animate-pulse rounded-full bg-danger" />
                   )}
                   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">

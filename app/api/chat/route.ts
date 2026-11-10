@@ -16,7 +16,9 @@ export const maxDuration = 300;
 const MAX_MESSAGES = 200;
 const MAX_CHARS = 500_000;
 /** Most web searches the model may run for one reply. */
-const MAX_SEARCHES = 3;
+const MAX_SEARCHES = 4;
+/** Most model turns for one reply; the last one runs without tools. */
+const MAX_TURNS = 6;
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type ToolCall = { id: string; name: string; arguments: string };
@@ -124,8 +126,31 @@ async function modelTurn(
     throw new Error(`The Blackthorn endpoint returned an error (${res.status}).`);
   }
 
-  let text = "";
+  let raw = ""; // everything the model wrote
+  let emitted = 0; // how much of it has been forwarded
+  let marker = -1; // where tool-call markup begins, once seen
   const calls: ToolCall[] = [];
+
+  // Forward text as it arrives, but never tool-call markup: the model sometimes
+  // writes its calls as text ("<tool_call>…") instead of structured calls.
+  const forward = (final: boolean) => {
+    if (marker < 0) marker = raw.indexOf(TOOL_MARKER);
+    let end = marker >= 0 ? marker : raw.length;
+    if (marker < 0 && !final) {
+      // Hold back a tail that could be the start of the marker.
+      for (let size = Math.min(TOOL_MARKER.length - 1, raw.length); size > 0; size--) {
+        if (TOOL_MARKER.startsWith(raw.slice(raw.length - size))) {
+          end = raw.length - size;
+          break;
+        }
+      }
+    }
+    if (end > emitted) {
+      onText(raw.slice(emitted, end));
+      emitted = end;
+    }
+  };
+
   for await (const event of sseEvents(res.body)) {
     const failure = (event.error as { message?: string } | undefined)?.message;
     if (failure) throw new Error(failure);
@@ -134,8 +159,8 @@ async function modelTurn(
       ?.delta;
     if (!delta) continue;
     if (typeof delta.content === "string" && delta.content) {
-      text += delta.content;
-      onText(delta.content);
+      raw += delta.content;
+      forward(false);
     }
     const parts = delta.tool_calls as
       | { index?: number; id?: string; function?: { name?: string; arguments?: string } }[]
@@ -147,7 +172,56 @@ async function modelTurn(
       if (part.function?.arguments) call.arguments += part.function.arguments;
     }
   }
-  return { text, calls: calls.filter(Boolean) };
+  forward(true);
+
+  const structured = calls.filter(Boolean);
+  return {
+    text: marker >= 0 ? raw.slice(0, marker).trimEnd() : raw,
+    calls: structured.length > 0 || marker < 0 ? structured : parseTextCalls(raw.slice(marker)),
+  };
+}
+
+const TOOL_MARKER = "<tool_call";
+
+/**
+ * Reads tool calls the model wrote as text. Two shapes occur:
+ *   <tool_call><function=web_search><parameter=query>…</parameter></function></tool_call>
+ *   <tool_call>{"name": "web_search", "arguments": {"query": "…"}}</tool_call>
+ */
+function parseTextCalls(markup: string): ToolCall[] {
+  const calls: ToolCall[] = [];
+  const add = (name: string, args: Record<string, unknown>) =>
+    calls.push({
+      id: `call_text_${calls.length}_${Math.random().toString(36).slice(2, 10)}`,
+      name,
+      arguments: JSON.stringify(args),
+    });
+
+  for (const match of markup.matchAll(/<function=([\w.-]+)>([\s\S]*?)(?:<\/function>|$)/g)) {
+    const args: Record<string, unknown> = {};
+    for (const parameter of match[2].matchAll(
+      /<parameter=([\w.-]+)>([\s\S]*?)(?:<\/parameter>|$)/g,
+    )) {
+      args[parameter[1]] = parameter[2].trim();
+    }
+    add(match[1], args);
+  }
+  if (calls.length === 0) {
+    for (const match of markup.matchAll(/<tool_call>\s*(\{[\s\S]*?\})\s*(?:<\/tool_call>|$)/g)) {
+      try {
+        const parsed = JSON.parse(match[1]) as { name?: unknown; arguments?: unknown };
+        if (typeof parsed.name !== "string") continue;
+        const args =
+          typeof parsed.arguments === "string"
+            ? (JSON.parse(parsed.arguments) as Record<string, unknown>)
+            : ((parsed.arguments as Record<string, unknown>) ?? {});
+        add(parsed.name, args);
+      } catch {
+        // not a call we can read
+      }
+    }
+  }
+  return calls;
 }
 
 export async function POST(request: NextRequest) {
@@ -200,12 +274,15 @@ export async function POST(request: NextRequest) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       try {
         let searches = 0;
-        for (;;) {
+        // Tools stay on for every turn so calls arrive in structured form; the
+        // search limit is enforced when a call is answered, and the number of
+        // turns is capped so a model that keeps calling cannot loop forever.
+        for (let turn = 0; turn < MAX_TURNS; turn++) {
           const { text, calls } = await modelTurn(
             url,
             model,
             conversation,
-            searching && searches < MAX_SEARCHES,
+            searching && turn < MAX_TURNS - 1,
             request.signal, // stop generating when the browser disconnects
             (delta) => send({ delta }),
           );
@@ -232,8 +309,11 @@ export async function POST(request: NextRequest) {
             let content: string;
             if (call.name !== "web_search" || !query) {
               content = "Invalid tool call. Answer without it.";
+            } else if (!searching) {
+              content = "Web search is off for this message. Answer without searching.";
             } else if (searches >= MAX_SEARCHES) {
-              content = "Search limit reached. Answer from what you already have.";
+              content =
+                "Search limit reached. Do not search again; answer now from the results you already have.";
             } else {
               searches += 1;
               send({ search: { status: "searching", query } });
