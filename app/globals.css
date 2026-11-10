@@ -1,36 +1,36 @@
 @import "tailwindcss";
 
-/* Theme built around the navy #001427: the dark background, and the ink
-   colour in light mode. Surfaces step up from it in even increments. */
+/* Theme built around the deep green #041B15: the dark background, and the
+   ink colour in light mode. Surfaces step up from it in even increments. */
 :root {
-  --bg: #f0f3f6;
+  --bg: #f0f5f3;
   --surface: #ffffff;
-  --surface-2: #e2e8ee;
-  --border: #d2dae2;
-  --text: #001427;
-  --muted: #5a6a7a;
-  --accent: #0b5cad;
+  --surface-2: #e1ebe7;
+  --border: #d0ddd8;
+  --text: #041b15;
+  --muted: #586b64;
+  --accent: #0b7a57;
   --accent-text: #ffffff;
   --danger: #c0362c;
-  --spinner: #001427;
-  --send: #001427;
+  --spinner: #041b15;
+  --send: #041b15;
   --send-text: #ffffff;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #001427;
-    --surface: #0a2137;
-    --surface-2: #142e46;
-    --border: #213c55;
-    --text: #e9eef3;
-    --muted: #94a5b6;
-    --accent: #8cc8ff;
-    --accent-text: #001427;
+    --bg: #041b15;
+    --surface: #0d2922;
+    --surface-2: #173730;
+    --border: #25473e;
+    --text: #e9f1ee;
+    --muted: #94aba3;
+    --accent: #7fd8b8;
+    --accent-text: #041b15;
     --danger: #ff8a7d;
     --spinner: #ffffff;
     --send: #ffffff;
-    --send-text: #001427;
+    --send-text: #041b15;
   }
 }
 
