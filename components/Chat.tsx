@@ -25,6 +25,8 @@ import {
   type PendingFile,
 } from "@/lib/attachments";
 import { createReveal, sseEvents } from "@/lib/stream";
+import { useDictation } from "@/lib/dictation";
+import { ModelPicker } from "./ModelPicker";
 import { Sidebar } from "./Sidebar";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 
@@ -73,6 +75,20 @@ export function Chat({
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Dictated words are appended to whatever was in the box when dictation began.
+  const dictationBaseRef = useRef("");
+  const dictation = useDictation((finalText, interimText) => {
+    setInput(`${dictationBaseRef.current}${finalText}${interimText}`.replace(/^\s+/, ""));
+    requestAnimationFrame(resizeInput);
+  });
+
+  function toggleDictation() {
+    if (dictation.listening) return dictation.stop();
+    dictationBaseRef.current = input && !/\s$/.test(input) ? `${input} ` : input;
+    dictation.start();
+    inputRef.current?.focus();
+  }
 
   const abortRef = useRef<AbortController | null>(null);
   const deletedRef = useRef(new Set<string>());
@@ -153,6 +169,7 @@ export function Chat({
     const content = text.trim();
     const attachments = readyFiles;
     if ((!content && attachments.length === 0) || busy || reading || !model) return;
+    dictation.stop();
 
     const record = touched(active ?? createChat(content || attachments[0].name), []);
     const chatId = record.id;
@@ -432,6 +449,7 @@ export function Chat({
               rows={1}
               value={input}
               onChange={(event) => {
+                if (dictation.listening) dictation.stop(); // typing takes over
                 setInput(event.target.value);
                 resizeInput();
               }}
@@ -450,7 +468,12 @@ export function Chat({
               placeholder="Send a message"
               className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 outline-none placeholder:text-muted"
             />
-            <div className="mt-1 flex items-center justify-between gap-2">
+            {dictation.error && (
+              <p role="alert" className="px-2 pb-1 text-xs text-danger">
+                {dictation.error}
+              </p>
+            )}
+            <div className="mt-1 flex items-center gap-2">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -481,37 +504,16 @@ export function Chat({
                   />
                 </svg>
               </button>
-              {models.length > 0 ? (
-                <div className="relative min-w-0">
-                  <label htmlFor="model" className="sr-only">
-                    Model
-                  </label>
-                  <select
-                    id="model"
-                    value={model}
-                    onChange={(event) => {
-                      setSavedModel(event.target.value);
-                      saveModel(event.target.value);
-                    }}
-                    className="max-w-full cursor-pointer appearance-none truncate rounded-lg border border-border bg-surface py-1.5 pl-3 pr-8 text-sm hover:bg-surface-2 focus:outline-none"
-                  >
-                    {models.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
-                      </option>
-                    ))}
-                  </select>
-                  <svg
-                    viewBox="0 0 16 16"
-                    width="12"
-                    height="12"
-                    aria-hidden="true"
-                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted"
-                  >
-                    <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </div>
-              ) : null}
+              {models.length > 0 && (
+                <ModelPicker
+                  models={models}
+                  value={model}
+                  onChange={(id) => {
+                    setSavedModel(id);
+                    saveModel(id);
+                  }}
+                />
+              )}
               {models.length > 0 && search !== null && (
                 <button
                   type="button"
@@ -525,7 +527,7 @@ export function Chat({
                     setSearchOn(!searchOn);
                     saveSearchEnabled(!searchOn);
                   }}
-                  className={`mr-auto flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm ${
+                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm ${
                     searchOn
                       ? "border-muted text-text"
                       : "border-border text-muted hover:bg-surface-2"
@@ -541,12 +543,43 @@ export function Chat({
                 </button>
               )}
               {models.length === 0 && (
-                <p className="mr-auto px-2 text-sm text-danger">
+                <p className="px-2 text-sm text-danger">
                   Blackthorn endpoint unreachable.{" "}
                   <button type="button" onClick={onSessionChange} className="underline">
                     Retry
                   </button>
                 </p>
+              )}
+              <span className="flex-1" />
+              {dictation.supported && (
+                <button
+                  type="button"
+                  onClick={toggleDictation}
+                  aria-pressed={dictation.listening}
+                  aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
+                  title={
+                    dictation.listening
+                      ? dictation.onDevice
+                        ? "Listening (speech is recognised on this device). Click to stop."
+                        : "Listening (speech is recognised by your browser's speech service, outside Blackthorn's encryption). Click to stop."
+                      : "Dictate"
+                  }
+                  className={`relative shrink-0 rounded-lg border p-2 ${
+                    dictation.listening
+                      ? "border-text bg-text text-bg"
+                      : "border-border text-muted hover:bg-surface-2 hover:text-text"
+                  }`}
+                >
+                  {dictation.listening && (
+                    <span className="absolute -right-1 -top-1 size-2.5 animate-pulse rounded-full bg-danger" />
+                  )}
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="5.800" y="1.800" width="4.400" height="7.400" rx="2.200" />
+                      <path d="M3.300 7.600a4.700 4.700 0 009.400 0M8 12.300v2M5.800 14.300h4.400" />
+                    </g>
+                  </svg>
+                </button>
               )}
               {busy ? (
                 <button

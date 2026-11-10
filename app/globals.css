@@ -147,3 +147,30 @@ body {
     animation-duration: 8s;
   }
 }
+
+/* Model menu: a quick rise into place */
+.model-menu {
+  transform-origin: bottom left;
+  animation: menu-in 0.14s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-menu {
+    animation: none;
+  }
+}
+
+/* Keyboard focus: a neutral ring instead of the browser's coloured one */
+:focus-visible {
+  outline: 2px solid var(--muted);
+  outline-offset: 2px;
+}
+textarea:focus-visible,
+input:focus-visible {
+  outline: none;
+}

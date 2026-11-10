@@ -47,6 +47,14 @@ and only that text is sent with the message; the original file is not uploaded.
   cannot be understood.
 - Limits: 10 files per message, 30 MB per file, 120,000 characters per file.
 
+## Dictation
+
+The microphone button dictates into the message box with the browser's speech
+recognition (`lib/dictation.ts`). On-device recognition is requested when the
+browser offers it; otherwise the audio goes to the browser vendor's speech
+service, outside Blackthorn's encryption. Browsers without speech recognition
+(such as Firefox) do not show the button.
+
 ## What the assistant knows about itself
 
 `lib/system-prompt.ts` gives the model an accurate description of this app's
