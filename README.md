@@ -21,6 +21,25 @@ browser ──HTTPS──> this app (/api/chat) ──> blackthorn serve ══s
 Prompts are plaintext up to the Blackthorn client and encrypted from there on.
 Whoever runs this app and the client can therefore see them; the GPU host cannot.
 
+## Web search
+
+The model can search the web through a `web_search` tool when a search key is
+configured and the user leaves the "Web search" toggle on:
+
+- `TAVILY_API_KEY` – Tavily, free plan without a credit card.
+- `BRAVE_API_KEY` – Brave Search (metered, credit card required). Used instead
+  of Tavily when set.
+
+Search queries are sent to that provider in plaintext, outside Blackthorn's
+encryption. The model writes the query, the server runs it (`lib/search.ts`),
+and the reply lists the sources. With no key set, the toggle is hidden.
+
+## What the assistant knows about itself
+
+`lib/system-prompt.ts` gives the model an accurate description of this app's
+data path, Blackthorn and Arcium, so questions like "is this running
+privately?" get a factual answer. Update it when the architecture changes.
+
 ## Run locally
 
 ```bash
@@ -45,8 +64,10 @@ Open http://localhost:3000.
 | `BLACKTHORN_HOST`     | Optional Blackthorn host for the bundled client.                        |
 | `BLACKTHORN_API_KEY`  | Optional bearer token, if the client sits behind an authenticating proxy. |
 | `BLACKTHORN_MODEL`    | Optional model id. Defaults to the first model the client lists.        |
+| `TAVILY_API_KEY`      | Optional web search key (Tavily).                                       |
+| `BRAVE_API_KEY`       | Optional web search key (Brave Search); takes precedence over Tavily.   |
 | `APP_PASSWORD`        | Shared access password. Required in production; empty locally = no gate. |
-| `SYSTEM_PROMPT`       | Optional system prompt.                                                 |
+| `SYSTEM_PROMPT`       | Optional extra instructions appended to the built-in system prompt.     |
 
 In production the app refuses all chat requests until `APP_PASSWORD` is set.
 
@@ -64,6 +85,8 @@ lib/blackthorn.ts     endpoint and model list
 lib/client-process.ts runs the bundled client on hosted deployments
 lib/chats.ts          chat history in the browser's localStorage
 lib/stream.ts         stream parsing and steady text reveal
+lib/search.ts         web search providers and the search tool
+lib/system-prompt.ts  what the assistant knows about this app, Blackthorn, Arcium
 ```
 
 ## Deploying (Vercel)

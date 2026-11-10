@@ -1,6 +1,7 @@
 import { connection, type NextRequest } from "next/server";
 import { gateState, isAuthed } from "@/lib/auth";
 import { listModels, type ModelInfo } from "@/lib/blackthorn";
+import { searchProvider } from "@/lib/search";
 
 export const maxDuration = 120; // first call may start the bundled client
 
@@ -20,7 +21,14 @@ export async function GET(request: NextRequest) {
   }
 
   return Response.json(
-    { authed, gated: state === "locked", misconfigured: state === "misconfigured", models },
+    {
+      authed,
+      gated: state === "locked",
+      misconfigured: state === "misconfigured",
+      models,
+      // Name of the web search provider, or null when search is not set up.
+      search: authed ? (searchProvider()?.name ?? null) : null,
+    },
     { headers: { "cache-control": "no-store" } },
   );
 }

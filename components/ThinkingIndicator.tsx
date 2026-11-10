@@ -35,7 +35,7 @@ const LAYERS = [
   { length: 12, width: 2.1, opacity: 0.95 },
 ];
 
-export function ThinkingIndicator() {
+export function ThinkingIndicator({ label = "Thinking…" }: { label?: string }) {
   return (
     <span role="status" className="inline-flex items-center gap-3 text-muted">
       <svg
@@ -105,7 +105,7 @@ export function ThinkingIndicator() {
           ))}
         </g>
       </svg>
-      <span className="thinking-text">Thinking…</span>
+      <span className="thinking-text">{label}</span>
     </span>
   );
 }

@@ -1,6 +1,16 @@
 /** Chat history, kept in this browser's localStorage only. */
 
-export type Message = { role: "user" | "assistant"; content: string };
+export type SearchRecord = {
+  query: string;
+  status: "searching" | "done" | "failed";
+  results: { title: string; url: string }[];
+};
+export type Message = {
+  role: "user" | "assistant";
+  content: string;
+  /** Web searches the assistant ran while writing this reply. */
+  searches?: SearchRecord[];
+};
 export type ChatRecord = {
   id: string;
   title: string;
@@ -80,4 +90,23 @@ export function createChat(firstMessage: string): ChatRecord {
 
 export function touched(chat: ChatRecord, messages: Message[]): ChatRecord {
   return { ...chat, messages, updatedAt: Date.now() };
+}
+
+const SEARCH_KEY = "blackthorn-chat:search";
+
+/** Web search is on unless the user switched it off. */
+export function loadSearchEnabled(): boolean {
+  try {
+    return localStorage.getItem(SEARCH_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+export function saveSearchEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(SEARCH_KEY, enabled ? "on" : "off");
+  } catch {
+    // ignore
+  }
 }

@@ -1,4 +1,7 @@
-export async function* readDeltas(body: ReadableStream<Uint8Array>) {
+/** Reads a server-sent event stream and yields each JSON `data:` payload. */
+export async function* sseEvents(
+  body: ReadableStream<Uint8Array>,
+): AsyncGenerator<Record<string, unknown>> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -12,15 +15,11 @@ export async function* readDeltas(body: ReadableStream<Uint8Array>) {
       if (!line.startsWith("data:")) continue;
       const data = line.slice(5).trim();
       if (!data || data === "[DONE]") continue;
-      let event;
       try {
-        event = JSON.parse(data);
+        yield JSON.parse(data);
       } catch {
-        continue;
+        // skip malformed lines
       }
-      if (event.error) throw new Error(event.error.message ?? "The model returned an error.");
-      const delta = event.choices?.[0]?.delta?.content;
-      if (typeof delta === "string" && delta) yield delta;
     }
   }
 }

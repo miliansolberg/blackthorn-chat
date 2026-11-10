@@ -16,6 +16,11 @@ export async function baseUrl(): Promise<string> {
   return "http://127.0.0.1:8000/v1";
 }
 
+/** Whether this server runs the Blackthorn client itself or forwards to one. */
+export async function clientMode(): Promise<"bundled" | "external"> {
+  return !process.env.BLACKTHORN_BASE_URL && (await hasBundledClient()) ? "bundled" : "external";
+}
+
 export function upstreamHeaders(): Record<string, string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   // Only needed when your own client sits behind an authenticating proxy.

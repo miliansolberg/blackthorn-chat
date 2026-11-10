@@ -1,25 +1,39 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   createChat,
   loadChats,
   loadModel,
+  loadSearchEnabled,
   saveChats,
   saveModel,
+  saveSearchEnabled,
   touched,
   type ChatRecord,
   type Message,
+  type SearchRecord,
 } from "@/lib/chats";
-import { createReveal, readDeltas } from "@/lib/stream";
+import { createReveal, sseEvents } from "@/lib/stream";
 import { Sidebar } from "./Sidebar";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 
 type ModelInfo = { id: string; name: string };
 
 const NO_MESSAGES: Message[] = [];
+
+// Replies can now contain text shaped by web pages: never load remote images
+// (a tracking URL could carry chat content), and open links in a new tab.
+const MARKDOWN_COMPONENTS: Components = {
+  img: ({ alt }) => (alt ? <span>[image: {alt}]</span> : null),
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+};
 
 const SUGGESTIONS = [
   "Explain how encrypted inference keeps a prompt private",
@@ -29,10 +43,13 @@ const SUGGESTIONS = [
 
 export function Chat({
   models,
+  search,
   gated,
   onSessionChange,
 }: {
   models: ModelInfo[];
+  /** Name of the web search provider, or null when search is not set up. */
+  search: string | null;
   gated: boolean;
   onSessionChange: () => void;
 }) {
@@ -44,6 +61,7 @@ export function Chat({
   const [input, setInput] = useState("");
   const [savedModel, setSavedModel] = useState(loadModel);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [searchOn, setSearchOn] = useState(loadSearchEnabled);
 
   const abortRef = useRef<AbortController | null>(null);
   const deletedRef = useRef(new Set<string>());
@@ -113,15 +131,19 @@ export function Chat({
 
     const controller = new AbortController();
     abortRef.current = controller;
-    const reveal = createReveal(controller.signal, (shown) =>
-      write([...history, { role: "assistant", content: shown }]),
-    );
+    const searches: SearchRecord[] = [];
+    const reply = (text: string): Message => ({
+      role: "assistant",
+      content: text,
+      ...(searches.length > 0 ? { searches: searches.map((item) => ({ ...item })) } : {}),
+    });
+    const reveal = createReveal(controller.signal, (shown) => write([...history, reply(shown)]));
 
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: history, model }),
+        body: JSON.stringify({ messages: history, model, search: searchOn && search !== null }),
         signal: controller.signal,
       });
       if (res.status === 401) {
@@ -133,10 +155,27 @@ export function Chat({
         const body = await res.json().catch(() => null);
         throw new Error(body?.error ?? `Request failed (${res.status}).`);
       }
-      for await (const delta of readDeltas(res.body)) reveal.push(delta);
+      for await (const event of sseEvents(res.body)) {
+        if (typeof event.error === "string") throw new Error(event.error);
+        if (typeof event.delta === "string") reveal.push(event.delta);
+        const update = event.search as Partial<SearchRecord> | undefined;
+        if (update && typeof update.query === "string") {
+          const record: SearchRecord = {
+            query: update.query,
+            status: update.status === "done" || update.status === "failed" ? update.status : "searching",
+            results: Array.isArray(update.results) ? update.results : [],
+          };
+          const index = searches.findIndex(
+            (item) => item.query === record.query && item.status === "searching",
+          );
+          if (index >= 0) searches[index] = record;
+          else searches.push(record);
+          write([...history, reply(reveal.shown())]);
+        }
+      }
       if (!reveal.received()) throw new Error("The model returned an empty reply.");
       await reveal.finish();
-      write([...history, { role: "assistant", content: reveal.received() }]);
+      write([...history, reply(reveal.received())]);
     } catch (cause) {
       // Stop keeps what was on screen; a failure keeps everything that arrived.
       const stopped = controller.signal.aborted;
@@ -147,7 +186,7 @@ export function Chat({
           message: cause instanceof Error ? cause.message : "Something went wrong.",
         });
       }
-      write(answer ? [...history, { role: "assistant", content: answer }] : history);
+      write(answer ? [...history, reply(answer)] : history);
     } finally {
       controller.abort(); // ends the reveal loop on every path
       setBusyId(null);
@@ -239,13 +278,26 @@ export function Chat({
                   >
                     {message.content}
                   </div>
-                ) : message.content ? (
-                  <div key={index} className="prose-chat">
-                    <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-                  </div>
                 ) : (
-                  <div key={index} className="py-1">
-                    <ThinkingIndicator />
+                  <div key={index} className="flex flex-col gap-3">
+                    <Searches searches={message.searches} />
+                    {message.content ? (
+                      <div className="prose-chat">
+                        <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+                          {message.content}
+                        </Markdown>
+                      </div>
+                    ) : (
+                      <div className="py-1">
+                        <ThinkingIndicator
+                          label={
+                            message.searches?.some((item) => item.status === "searching")
+                              ? "Searching the web…"
+                              : "Thinking…"
+                          }
+                        />
+                      </div>
+                    )}
                   </div>
                 ),
               )
@@ -322,8 +374,37 @@ export function Chat({
                     <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </div>
-              ) : (
-                <p className="px-2 text-sm text-danger">
+              ) : null}
+              {models.length > 0 && search !== null && (
+                <button
+                  type="button"
+                  aria-pressed={searchOn}
+                  title={
+                    searchOn
+                      ? `Web search is on: search queries are sent to ${search}, outside Blackthorn's encryption`
+                      : "Web search is off"
+                  }
+                  onClick={() => {
+                    setSearchOn(!searchOn);
+                    saveSearchEnabled(!searchOn);
+                  }}
+                  className={`mr-auto flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm ${
+                    searchOn
+                      ? "border-accent text-accent"
+                      : "border-border text-muted hover:border-accent"
+                  }`}
+                >
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <g fill="none" stroke="currentColor" strokeWidth="1.3">
+                      <circle cx="8" cy="8" r="6.2" />
+                      <path d="M1.8 8h12.4M8 1.8c2 2 2 10.400 0 12.400M8 1.800c-2 2-2 10.400 0 12.400" />
+                    </g>
+                  </svg>
+                  Web search
+                </button>
+              )}
+              {models.length === 0 && (
+                <p className="mr-auto px-2 text-sm text-danger">
                   Blackthorn endpoint unreachable.{" "}
                   <button type="button" onClick={onSessionChange} className="underline">
                     Retry
@@ -351,6 +432,59 @@ export function Chat({
           </div>
         </form>
       </main>
+    </div>
+  );
+}
+
+/** The web searches behind a reply, with their sources. */
+function Searches({ searches }: { searches?: SearchRecord[] }) {
+  if (!Array.isArray(searches) || searches.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      {searches.map((item, index) => {
+        const results = Array.isArray(item.results) ? item.results : [];
+        return (
+          <details key={index} className="group rounded-xl border border-border text-sm">
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-muted [&::-webkit-details-marker]:hidden">
+              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" className="shrink-0">
+                <g fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <circle cx="7" cy="7" r="4.5" />
+                  <path d="M10.500 10.500L14 14" />
+                </g>
+              </svg>
+              <span className="min-w-0 truncate">
+                {item.status === "searching"
+                  ? "Searching the web: "
+                  : item.status === "failed"
+                    ? "Web search failed: "
+                    : "Searched the web: "}
+                <span className="text-text">{item.query}</span>
+              </span>
+              {results.length > 0 && (
+                <span className="ml-auto shrink-0 text-xs">
+                  {results.length} {results.length === 1 ? "source" : "sources"}
+                </span>
+              )}
+            </summary>
+            {results.length > 0 && (
+              <ol className="flex flex-col gap-1 border-t border-border px-3 py-2">
+                {results.map((result, position) => (
+                  <li key={position} className="truncate">
+                    <a
+                      href={/^https?:\/\//i.test(result.url) ? result.url : undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-accent hover:underline"
+                    >
+                      {result.title}
+                    </a>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </details>
+        );
+      })}
     </div>
   );
 }
