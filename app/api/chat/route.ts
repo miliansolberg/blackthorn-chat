@@ -14,7 +14,7 @@ import { buildSystemPrompt } from "@/lib/system-prompt";
 export const maxDuration = 300;
 
 const MAX_MESSAGES = 200;
-const MAX_CHARS = 400_000;
+const MAX_CHARS = 500_000;
 /** Most web searches the model may run for one reply. */
 const MAX_SEARCHES = 3;
 
@@ -33,6 +33,38 @@ type UpstreamMessage =
     }
   | { role: "tool"; tool_call_id: string; content: string };
 
+const MAX_ATTACHMENTS = 10;
+
+/** A user message's files, folded into its text for the model. */
+function withAttachments(content: string, raw: unknown): string | null {
+  if (raw === undefined) return content;
+  if (!Array.isArray(raw) || raw.length > MAX_ATTACHMENTS) return null;
+
+  const blocks: string[] = [];
+  for (const item of raw) {
+    const { name, kind, text, truncated } = (item ?? {}) as Record<string, unknown>;
+    if (typeof name !== "string" || typeof text !== "string") return null;
+    const label = name.replace(/["<>\n\r]/g, " ").slice(0, 200);
+    const notes: string[] = [];
+    if (kind === "image") {
+      notes.push(
+        text
+          ? "This is an image. You cannot see it; below is the text read from it by OCR, which may contain errors."
+          : "This is an image. You cannot see it, and no readable text was found in it.",
+      );
+    } else if (!text) {
+      notes.push("The contents of this file are no longer available.");
+    }
+    if (truncated === true) notes.push("The file was long and has been cut off.");
+    blocks.push(
+      `<attached_file name="${label}">\n${[...notes.map((note) => `[${note}]`), text]
+        .filter(Boolean)
+        .join("\n")}\n</attached_file>`,
+    );
+  }
+  return blocks.length > 0 ? `${blocks.join("\n\n")}\n\n${content}`.trim() : content;
+}
+
 function parseMessages(body: unknown): ChatMessage[] | null {
   const raw = (body as { messages?: unknown })?.messages;
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_MESSAGES) return null;
@@ -41,14 +73,20 @@ function parseMessages(body: unknown): ChatMessage[] | null {
   const messages: ChatMessage[] = [];
   for (const item of raw) {
     const role = (item as ChatMessage)?.role;
-    const content = (item as ChatMessage)?.content;
-    if ((role !== "user" && role !== "assistant") || typeof content !== "string") {
+    const text = (item as ChatMessage)?.content;
+    if ((role !== "user" && role !== "assistant") || typeof text !== "string") {
       return null;
     }
+    const content =
+      role === "user"
+        ? withAttachments(text, (item as { attachments?: unknown }).attachments)
+        : text;
+    if (content === null) return null;
     chars += content.length;
     messages.push({ role, content });
   }
-  if (chars > MAX_CHARS || messages[messages.length - 1].role !== "user") return null;
+  const last = messages[messages.length - 1];
+  if (chars > MAX_CHARS || last.role !== "user" || !last.content) return null;
   return messages;
 }
 
@@ -122,7 +160,9 @@ export async function POST(request: NextRequest) {
     return error("Invalid JSON.", 400);
   }
   const messages = parseMessages(body);
-  if (!messages) return error("Invalid messages.", 400);
+  if (!messages) {
+    return error("The message could not be sent. It may be empty or the attached files too long.", 400);
+  }
   const options = body as { model?: unknown; search?: unknown };
 
   let url: string;

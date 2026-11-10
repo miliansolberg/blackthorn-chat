@@ -9,11 +9,15 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "mammoth": "^1.13.0",
     "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "read-excel-file": "^9.3.14",
+    "remark-gfm": "^4.0.1",
+    "tesseract.js": "^7.0.0",
+    "unpdf": "^2.1.0"
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "4.3.3",

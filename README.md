@@ -34,6 +34,19 @@ Search queries are sent to that provider in plaintext, outside Blackthorn's
 encryption. The model writes the query, the server runs it (`lib/search.ts`),
 and the reply lists the sources. With no key set, the toggle is hidden.
 
+## File attachments
+
+Files can be attached with the paperclip, by pasting, or by dropping them on the
+message box. They are converted to text in the browser (`lib/attachments.ts`)
+and only that text is sent with the message; the original file is not uploaded.
+
+- Text and code files, PDF, DOCX and XLSX: their text is extracted.
+- Images: the current model reads text only, so images are read with on-device
+  OCR (tesseract.js, English). The OCR engine's files load from a public CDN on
+  first use; the image itself stays in the browser. Pictures without text
+  cannot be understood.
+- Limits: 10 files per message, 30 MB per file, 120,000 characters per file.
+
 ## What the assistant knows about itself
 
 `lib/system-prompt.ts` gives the model an accurate description of this app's
@@ -86,6 +99,7 @@ lib/client-process.ts runs the bundled client on hosted deployments
 lib/chats.ts          chat history in the browser's localStorage
 lib/stream.ts         stream parsing and steady text reveal
 lib/search.ts         web search providers and the search tool
+lib/attachments.ts    turns attached files into text in the browser
 lib/system-prompt.ts  what the assistant knows about this app, Blackthorn, Arcium
 ```
 

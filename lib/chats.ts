@@ -1,5 +1,7 @@
 /** Chat history, kept in this browser's localStorage only. */
 
+import type { Attachment } from "./attachments";
+
 export type SearchRecord = {
   query: string;
   status: "searching" | "done" | "failed";
@@ -10,6 +12,8 @@ export type Message = {
   content: string;
   /** Web searches the assistant ran while writing this reply. */
   searches?: SearchRecord[];
+  /** Files attached to a user message, already converted to text. */
+  attachments?: Attachment[];
 };
 export type ChatRecord = {
   id: string;
@@ -58,7 +62,27 @@ export function saveChats(chats: ChatRecord[]): void {
   try {
     localStorage.setItem(CHATS_KEY, JSON.stringify(chats));
   } catch {
-    // Storage is full or blocked: the chats still work for this visit.
+    // Most likely the storage quota: keep the conversations, drop file contents.
+    try {
+      const lighter = chats.map((chat) => ({
+        ...chat,
+        messages: chat.messages.map((message) =>
+          message.attachments
+            ? {
+                ...message,
+                attachments: message.attachments.map(({ name, kind }) => ({
+                  name,
+                  kind,
+                  text: "",
+                })),
+              }
+            : message,
+        ),
+      }));
+      localStorage.setItem(CHATS_KEY, JSON.stringify(lighter));
+    } catch {
+      // Storage is blocked: the chats still work for this visit.
+    }
   }
 }
 
@@ -79,7 +103,7 @@ export function saveModel(id: string): void {
 }
 
 export function createChat(firstMessage: string): ChatRecord {
-  const text = firstMessage.replace(/\s+/g, " ").trim();
+  const text = firstMessage.replace(/\s+/g, " ").trim() || "New chat";
   return {
     id: crypto.randomUUID(),
     title: text.length > 48 ? `${text.slice(0, 47).trimEnd()}…` : text,

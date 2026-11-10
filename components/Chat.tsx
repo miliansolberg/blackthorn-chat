@@ -16,6 +16,14 @@ import {
   type Message,
   type SearchRecord,
 } from "@/lib/chats";
+import {
+  ACCEPT,
+  MAX_ATTACHMENTS,
+  newPending,
+  readAttachment,
+  type Attachment,
+  type PendingFile,
+} from "@/lib/attachments";
 import { createReveal, sseEvents } from "@/lib/stream";
 import { Sidebar } from "./Sidebar";
 import { ThinkingIndicator } from "./ThinkingIndicator";
@@ -62,6 +70,9 @@ export function Chat({
   const [savedModel, setSavedModel] = useState(loadModel);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOn, setSearchOn] = useState(loadSearchEnabled);
+  const [pending, setPending] = useState<PendingFile[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const deletedRef = useRef(new Set<string>());
@@ -104,13 +115,51 @@ export function Chat({
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }
 
+  const reading = pending.some((file) => file.status === "reading");
+  const readyFiles = pending.flatMap((file) => (file.attachment ? [file.attachment] : []));
+  const canSend = !busy && !reading && Boolean(model) && (input.trim() !== "" || readyFiles.length > 0);
+
+  /** Converts picked, pasted or dropped files to text, here in the browser. */
+  function addFiles(list: FileList | File[]) {
+    const files = Array.from(list).slice(0, Math.max(0, MAX_ATTACHMENTS - pending.length));
+    if (files.length === 0) return;
+    const entries = files.map((file) => ({ file, entry: newPending(file) }));
+    setPending((previous) => [...previous, ...entries.map(({ entry }) => entry)]);
+    for (const { file, entry } of entries) {
+      readAttachment(file).then(
+        (attachment) =>
+          setPending((previous) =>
+            previous.map((item) =>
+              item.id === entry.id ? { ...item, status: "ready", attachment } : item,
+            ),
+          ),
+        (cause) =>
+          setPending((previous) =>
+            previous.map((item) =>
+              item.id === entry.id
+                ? {
+                    ...item,
+                    status: "error",
+                    error: cause instanceof Error ? cause.message : "Could not read this file.",
+                  }
+                : item,
+            ),
+          ),
+      );
+    }
+  }
+
   async function send(text: string) {
     const content = text.trim();
-    if (!content || busy || !model) return;
+    const attachments = readyFiles;
+    if ((!content && attachments.length === 0) || busy || reading || !model) return;
 
-    const record = touched(active ?? createChat(content), []);
+    const record = touched(active ?? createChat(content || attachments[0].name), []);
     const chatId = record.id;
-    const history: Message[] = [...(active?.messages ?? []), { role: "user", content }];
+    const history: Message[] = [
+      ...(active?.messages ?? []),
+      { role: "user", content, ...(attachments.length > 0 ? { attachments } : {}) },
+    ];
     const alive = () => !deletedRef.current.has(chatId);
     const write = (next: Message[]) =>
       setChats((previous) => {
@@ -125,6 +174,7 @@ export function Chat({
     setActiveId(chatId);
     setBusyId(chatId);
     setInput("");
+    setPending([]);
     setError(null);
     stickRef.current = true;
     requestAnimationFrame(resizeInput);
@@ -216,6 +266,14 @@ export function Chat({
     if (error?.chatId === id) setError(null);
   }
 
+  function deleteAllChats() {
+    for (const chat of chats) deletedRef.current.add(chat.id);
+    abortRef.current?.abort();
+    setChats([]);
+    setActiveId(null);
+    setError(null);
+  }
+
   async function signOut() {
     abortRef.current?.abort();
     await fetch("/api/login", { method: "DELETE" }).catch(() => null);
@@ -234,6 +292,7 @@ export function Chat({
         onSelect={selectChat}
         onNew={newChat}
         onDelete={deleteChat}
+        onDeleteAll={deleteAllChats}
         onSignOut={signOut}
       />
 
@@ -262,7 +321,7 @@ export function Chat({
                       key={suggestion}
                       onClick={() => send(suggestion)}
                       disabled={busy || !model}
-                      className="rounded-xl border border-border bg-surface px-4 py-2.5 text-left text-sm hover:border-accent disabled:opacity-50"
+                      className="rounded-xl border border-border bg-surface px-4 py-2.5 text-left text-sm hover:bg-surface-2 disabled:opacity-50"
                     >
                       {suggestion}
                     </button>
@@ -272,11 +331,19 @@ export function Chat({
             ) : (
               messages.map((message, index) =>
                 message.role === "user" ? (
-                  <div
-                    key={index}
-                    className="max-w-[85%] self-end whitespace-pre-wrap rounded-2xl bg-surface-2 px-4 py-2.5 [overflow-wrap:anywhere]"
-                  >
-                    {message.content}
+                  <div key={index} className="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
+                    {Array.isArray(message.attachments) && message.attachments.length > 0 && (
+                      <div className="flex flex-wrap justify-end gap-1.5">
+                        {message.attachments.map((attachment, position) => (
+                          <FileChip key={position} attachment={attachment} />
+                        ))}
+                      </div>
+                    )}
+                    {message.content && (
+                      <div className="whitespace-pre-wrap rounded-2xl bg-surface-2 px-4 py-2.5 [overflow-wrap:anywhere]">
+                        {message.content}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div key={index} className="flex flex-col gap-3">
@@ -318,9 +385,43 @@ export function Chat({
             event.preventDefault();
             send(input);
           }}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes("Files")) {
+              event.preventDefault();
+              setDragging(true);
+            }
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(event) => {
+            if (event.dataTransfer.files.length === 0) return;
+            event.preventDefault();
+            setDragging(false);
+            addFiles(event.dataTransfer.files);
+          }}
           className="mx-auto w-full max-w-3xl px-4 pb-4"
         >
-          <div className="rounded-2xl border border-border bg-surface p-2 focus-within:border-accent">
+          <div
+            className={`rounded-2xl border bg-surface p-2 ${
+              dragging ? "border-dashed border-muted" : "border-border"
+            }`}
+          >
+            {pending.length > 0 && (
+              <ul className="flex flex-wrap gap-1.5 px-1 pb-2 pt-1">
+                {pending.map((file) => (
+                  <li key={file.id}>
+                    <FileChip
+                      name={file.name}
+                      attachment={file.attachment}
+                      status={file.status}
+                      error={file.error}
+                      onRemove={() =>
+                        setPending((previous) => previous.filter((item) => item.id !== file.id))
+                      }
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
             <label htmlFor="message" className="sr-only">
               Message
             </label>
@@ -334,6 +435,12 @@ export function Chat({
                 setInput(event.target.value);
                 resizeInput();
               }}
+              onPaste={(event) => {
+                if (event.clipboardData.files.length > 0) {
+                  event.preventDefault();
+                  addFiles(event.clipboardData.files);
+                }
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
@@ -344,6 +451,36 @@ export function Chat({
               className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 outline-none placeholder:text-muted"
             />
             <div className="mt-1 flex items-center justify-between gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={ACCEPT}
+                className="hidden"
+                onChange={(event) => {
+                  if (event.target.files) addFiles(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={pending.length >= MAX_ATTACHMENTS}
+                aria-label="Attach files"
+                title="Attach files: images, PDF, Word, Excel, text"
+                className="shrink-0 rounded-lg border border-border p-2 text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+              >
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path
+                    d="M13.200 7.300l-5.300 5.300a3.200 3.200 0 01-4.500-4.500l5.600-5.600a2.100 2.100 0 013 3l-5.500 5.500a1 1 0 01-1.500-1.500l5-5"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
               {models.length > 0 ? (
                 <div className="relative min-w-0">
                   <label htmlFor="model" className="sr-only">
@@ -356,7 +493,7 @@ export function Chat({
                       setSavedModel(event.target.value);
                       saveModel(event.target.value);
                     }}
-                    className="max-w-full cursor-pointer appearance-none truncate rounded-lg border border-border bg-surface py-1.5 pl-3 pr-8 text-sm hover:border-accent focus:border-accent focus:outline-none"
+                    className="max-w-full cursor-pointer appearance-none truncate rounded-lg border border-border bg-surface py-1.5 pl-3 pr-8 text-sm hover:bg-surface-2 focus:outline-none"
                   >
                     {models.map((item) => (
                       <option key={item.id} value={item.id}>
@@ -390,8 +527,8 @@ export function Chat({
                   }}
                   className={`mr-auto flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm ${
                     searchOn
-                      ? "border-accent text-accent"
-                      : "border-border text-muted hover:border-accent"
+                      ? "border-muted text-text"
+                      : "border-border text-muted hover:bg-surface-2"
                   }`}
                 >
                   <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
@@ -422,8 +559,8 @@ export function Chat({
               ) : (
                 <button
                   type="submit"
-                  disabled={!input.trim() || !model}
-                  className="rounded-xl bg-accent px-4 py-1.5 font-medium text-accent-text disabled:opacity-40"
+                  disabled={!canSend}
+                  className="rounded-xl bg-send px-4 py-1.5 font-medium text-send-text disabled:opacity-40"
                 >
                   Send
                 </button>
@@ -486,5 +623,82 @@ function Searches({ searches }: { searches?: SearchRecord[] }) {
         );
       })}
     </div>
+  );
+}
+
+/** One attached file: in the composer (removable, with status) or in a sent message. */
+function FileChip({
+  name,
+  attachment,
+  status = "ready",
+  error,
+  onRemove,
+}: {
+  name?: string;
+  attachment?: Attachment;
+  status?: PendingFile["status"];
+  error?: string;
+  onRemove?: () => void;
+}) {
+  const label = name ?? attachment?.name ?? "file";
+  const isImage = attachment?.kind === "image";
+  const detail =
+    status === "reading"
+      ? "Reading…"
+      : status === "error"
+        ? (error ?? "Could not read this file.")
+        : isImage
+          ? attachment?.text
+            ? "Image · text read from it"
+            : "Image · no text found"
+          : attachment && !attachment.text
+            ? "Contents no longer stored"
+            : attachment?.truncated
+              ? "Long file · cut off"
+              : null;
+  return (
+    <span
+      title={detail ? `${label}: ${detail}` : label}
+      className={`inline-flex max-w-64 items-center gap-2 rounded-xl border bg-surface py-1 pl-1.5 pr-2 text-sm ${
+        status === "error" ? "border-danger/50" : "border-border"
+      }`}
+    >
+      {attachment?.preview ? (
+        // eslint-disable-next-line @next/next/no-img-element -- local data-URL thumbnail
+        <img src={attachment.preview} alt="" className="size-7 shrink-0 rounded-md object-cover" />
+      ) : (
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-surface-2 text-muted">
+          <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+            <path
+              d="M4 1.800h5l3 3v9.400H4zM9 1.800v3h3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
+      )}
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate">{label}</span>
+        {detail && (
+          <span className={`truncate text-xs ${status === "error" ? "text-danger" : "text-muted"}`}>
+            {detail}
+          </span>
+        )}
+      </span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remove ${label}`}
+          className="shrink-0 rounded-md p-1 text-muted hover:bg-surface-2 hover:text-text"
+        >
+          <svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
+            <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+        </button>
+      )}
+    </span>
   );
 }

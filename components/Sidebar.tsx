@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatRecord } from "@/lib/chats";
 
 export function Sidebar({
@@ -13,6 +13,7 @@ export function Sidebar({
   onSelect,
   onNew,
   onDelete,
+  onDeleteAll,
   onSignOut,
 }: {
   chats: ChatRecord[];
@@ -24,6 +25,7 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
+  onDeleteAll: () => void;
   onSignOut: () => void;
 }) {
   // Deleting takes two clicks: the first arms the button for this chat.
@@ -61,7 +63,7 @@ export function Sidebar({
         <div className="p-3">
           <button
             onClick={onNew}
-            className="flex w-full items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm font-medium hover:border-accent"
+            className="flex w-full items-center gap-2 rounded-xl border border-border px-3 py-2 text-sm font-medium hover:bg-surface-2"
           >
             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
               <path d="M8 2.5v11M2.5 8h11" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -95,7 +97,7 @@ export function Sidebar({
                       className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm"
                     >
                       {chat.id === busyId && (
-                        <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
+                        <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-text" />
                       )}
                       <span className="truncate">{chat.title}</span>
                     </button>
@@ -137,15 +139,111 @@ export function Sidebar({
           )}
         </nav>
 
-        <div className="border-t border-border px-4 py-3 text-xs text-muted">
-          <p>Prompts are sealed by the Blackthorn client before they reach the GPU.</p>
+        <Profile
+          gated={gated}
+          chatCount={chats.length}
+          onDeleteAll={onDeleteAll}
+          onSignOut={onSignOut}
+        />
+      </aside>
+    </>
+  );
+}
+
+/** The profile button at the foot of the panel, with its small menu. */
+function Profile({
+  gated,
+  chatCount,
+  onDeleteAll,
+  onSignOut,
+}: {
+  gated: boolean;
+  chatCount: number;
+  onDeleteAll: () => void;
+  onSignOut: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [armed, setArmed] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: MouseEvent | KeyboardEvent) => {
+      if (event instanceof KeyboardEvent ? event.key === "Escape" : !containerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+        setArmed(false);
+      }
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("keydown", close);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("keydown", close);
+    };
+  }, [open]);
+
+  const itemClass =
+    "flex w-full items-center rounded-lg px-3 py-2 text-left text-sm hover:bg-surface-2 disabled:opacity-40 disabled:hover:bg-transparent";
+
+  return (
+    <div ref={containerRef} className="relative border-t border-border p-2">
+      {open && (
+        <div
+          role="menu"
+          className="absolute inset-x-2 bottom-full mb-1 rounded-xl border border-border bg-surface p-1 shadow-lg"
+        >
+          <p className="px-3 pb-1 pt-2 text-xs text-muted">
+            {gated ? "Signed in with the access password" : "No sign-in on this deployment"}
+          </p>
+          <button
+            role="menuitem"
+            disabled={chatCount === 0}
+            onClick={() => {
+              if (!armed) return setArmed(true);
+              setArmed(false);
+              setOpen(false);
+              onDeleteAll();
+            }}
+            className={`${itemClass} ${armed ? "text-danger" : ""}`}
+          >
+            {armed ? `Delete all ${chatCount} chats?` : "Delete all chats"}
+          </button>
           {gated && (
-            <button onClick={onSignOut} className="mt-2 text-sm text-text hover:underline">
+            <button
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                onSignOut();
+              }}
+              className={itemClass}
+            >
               Sign out
             </button>
           )}
         </div>
-      </aside>
-    </>
+      )}
+      <button
+        onClick={() => {
+          setOpen(!open);
+          setArmed(false);
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left text-sm hover:bg-surface-2"
+      >
+        <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-surface-2">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+            <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
+              <circle cx="8" cy="5.600" r="2.600" />
+              <path d="M2.800 13.400c.7-2.400 2.800-3.600 5.200-3.600s4.500 1.200 5.200 3.600" />
+            </g>
+          </svg>
+        </span>
+        <span className="min-w-0 flex-1 truncate font-medium">Profile</span>
+        <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" className="shrink-0 text-muted">
+          <path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+    </div>
   );
 }

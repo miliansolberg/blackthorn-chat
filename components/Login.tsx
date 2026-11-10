@@ -50,7 +50,7 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Access password"
-          className="mt-4 w-full rounded-lg border border-border bg-bg px-3 py-2 outline-none focus:border-accent"
+          className="mt-4 w-full rounded-lg border border-border bg-bg px-3 py-2 outline-none"
         />
         {error && (
           <p role="alert" className="mt-2 text-sm text-danger">
@@ -60,7 +60,7 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
         <button
           type="submit"
           disabled={!password || busy}
-          className="mt-4 w-full rounded-lg bg-accent px-3 py-2 font-medium text-accent-text disabled:opacity-50"
+          className="mt-4 w-full rounded-lg bg-send px-3 py-2 font-medium text-send-text disabled:opacity-50"
         >
           {busy ? "Checking…" : "Continue"}
         </button>
