@@ -30,7 +30,12 @@ export function upstreamHeaders(): Record<string, string> {
   return headers;
 }
 
-export type ModelInfo = { id: string; name: string };
+export type ModelInfo = {
+  id: string;
+  name: string;
+  /** Size of the context window in tokens, when the client reports it. */
+  contextWindow: number | null;
+};
 
 /** "qwen3.8-27b-bllm" -> "Qwen 3.8 27B" */
 export function displayName(id: string): string {
@@ -54,7 +59,7 @@ let cachedModels: { list: ModelInfo[]; at: number } | null = null;
 /** The models the client offers (BLACKTHORN_MODEL pins a single one). */
 export async function listModels(): Promise<ModelInfo[]> {
   const pinned = process.env.BLACKTHORN_MODEL;
-  if (pinned) return [{ id: pinned, name: displayName(pinned) }];
+  if (pinned) return [{ id: pinned, name: displayName(pinned), contextWindow: null }];
   if (cachedModels && Date.now() - cachedModels.at < 5 * 60_000) return cachedModels.list;
 
   const res = await fetch(`${await baseUrl()}/models`, {
@@ -63,18 +68,26 @@ export async function listModels(): Promise<ModelInfo[]> {
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`model list failed with status ${res.status}`);
-  const body = (await res.json()) as { data?: { id?: string }[] };
+  const body = (await res.json()) as { data?: { id?: string; context_window?: number }[] };
   const list = (body.data ?? [])
-    .map((model) => model.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0)
-    .map((id) => ({ id, name: displayName(id) }));
+    .filter((model): model is { id: string; context_window?: number } =>
+      typeof model.id === "string" && model.id.length > 0,
+    )
+    .map((model) => ({
+      id: model.id,
+      name: displayName(model.id),
+      contextWindow:
+        typeof model.context_window === "number" && model.context_window > 0
+          ? model.context_window
+          : null,
+    }));
   if (list.length === 0) throw new Error("the Blackthorn client listed no models");
   cachedModels = { list, at: Date.now() };
   return list;
 }
 
 /** The requested model if the client offers it, otherwise the first one. */
-export async function resolveModel(requested?: string): Promise<string> {
+export async function resolveModel(requested?: string): Promise<ModelInfo> {
   const models = await listModels();
-  return models.find((model) => model.id === requested)?.id ?? models[0].id;
+  return models.find((model) => model.id === requested) ?? models[0];
 }

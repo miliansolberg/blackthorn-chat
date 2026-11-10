@@ -12,6 +12,7 @@ import {
   saveModel,
   saveSearchEnabled,
   touched,
+  type ActivityStep,
   type ChatRecord,
   type Message,
   type SearchRecord,
@@ -31,11 +32,15 @@ import {
   saveDictationLanguage,
   useDictation,
 } from "@/lib/dictation";
+import { Activity } from "./Activity";
+import { ContextRing } from "./ContextRing";
 import { ModelPicker } from "./ModelPicker";
-import { Sidebar } from "./Sidebar";
-import { ThinkingIndicator } from "./ThinkingIndicator";
+import { PanelIcon, Sidebar } from "./Sidebar";
 
-type ModelInfo = { id: string; name: string };
+type ModelInfo = { id: string; name: string; contextWindow: number | null };
+
+/** Most times a reply is picked up again after the server ran out of time. */
+const MAX_RESUMES = 30;
 
 const NO_MESSAGES: Message[] = [];
 
@@ -49,6 +54,12 @@ const MARKDOWN_COMPONENTS: Components = {
     </a>
   ),
 };
+
+/** Milliseconds since this was called. */
+function stopwatch(): () => number {
+  const startedAt = performance.now();
+  return () => Math.round(performance.now() - startedAt);
+}
 
 const SUGGESTIONS = [
   "Explain how encrypted inference keeps a prompt private",
@@ -76,6 +87,7 @@ export function Chat({
   const [input, setInput] = useState("");
   const [savedModel, setSavedModel] = useState(loadModel);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [searchOn, setSearchOn] = useState(loadSearchEnabled);
   const [pending, setPending] = useState<PendingFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -103,7 +115,8 @@ export function Chat({
   const stickRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const model = models.find((item) => item.id === savedModel)?.id ?? models[0]?.id ?? "";
+  const modelInfo = models.find((item) => item.id === savedModel) ?? models[0] ?? null;
+  const model = modelInfo?.id ?? "";
   const active = chats.find((chat) => chat.id === activeId) ?? null;
   const messages = active?.messages ?? NO_MESSAGES;
   const empty = messages.length === 0;
@@ -185,10 +198,11 @@ export function Chat({
       { role: "user", content, ...(attachments.length > 0 ? { attachments } : {}) },
     ];
     const alive = () => !deletedRef.current.has(chatId);
+    let usage = record.usage;
     const write = (next: Message[]) =>
       setChats((previous) => {
         if (!alive()) return previous;
-        const updated = { ...record, messages: next };
+        const updated = { ...record, messages: next, ...(usage ? { usage } : {}) };
         return previous.some((chat) => chat.id === chatId)
           ? previous.map((chat) => (chat.id === chatId ? updated : chat))
           : [updated, ...previous];
@@ -206,54 +220,139 @@ export function Chat({
     const controller = new AbortController();
     abortRef.current = controller;
     const searches: SearchRecord[] = [];
+    // The activity view: every step, timed from the moment of sending.
+    const clock = stopwatch();
+    const activity: ActivityStep[] = [];
+    let reasoning = "";
+    let seconds: number | undefined;
     const reply = (text: string): Message => ({
       role: "assistant",
       content: text,
       ...(searches.length > 0 ? { searches: searches.map((item) => ({ ...item })) } : {}),
+      ...(activity.length > 0 ? { activity: [...activity] } : {}),
+      ...(reasoning ? { reasoning } : {}),
+      ...(seconds !== undefined ? { seconds } : {}),
     });
     const reveal = createReveal(controller.signal, (shown) => write([...history, reply(shown)]));
+    const step = (text: string) => {
+      activity.push({ at: clock(), text });
+      write([...history, reply(reveal.shown())]);
+    };
+    step("Message sent to the app server over HTTPS");
 
     try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: history, model, search: searchOn && search !== null }),
-        signal: controller.signal,
-      });
-      if (res.status === 401) {
-        write(history);
-        onSessionChange();
-        return;
-      }
-      if (!res.ok || !res.body) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error ?? `Request failed (${res.status}).`);
-      }
-      for await (const event of sseEvents(res.body)) {
-        if (typeof event.error === "string") throw new Error(event.error);
-        if (typeof event.delta === "string") reveal.push(event.delta);
-        const update = event.search as Partial<SearchRecord> | undefined;
-        if (update && typeof update.query === "string") {
-          const record: SearchRecord = {
-            query: update.query,
-            status: update.status === "done" || update.status === "failed" ? update.status : "searching",
-            results: Array.isArray(update.results) ? update.results : [],
-          };
-          const index = searches.findIndex(
-            (item) => item.query === record.query && item.status === "searching",
-          );
-          if (index >= 0) searches[index] = record;
-          else searches.push(record);
-          write([...history, reply(reveal.shown())]);
+      // A long reply can outlast one server request; it is then picked up again
+      // from where it stopped until the model says it is finished.
+      let finished = false;
+      let failures = 0;
+      for (let resumes = 0; !finished; resumes++) {
+        const partial = reveal.received();
+        try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            messages: partial ? [...history, { role: "assistant", content: partial }] : history,
+            continue: partial !== "",
+            model,
+            search: searchOn && search !== null,
+          }),
+          signal: controller.signal,
+        });
+        if (res.status === 401) {
+          write(partial ? [...history, reply(partial)] : history);
+          onSessionChange();
+          return;
+        }
+        if (!res.ok || !res.body) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error ?? `Request failed (${res.status}).`);
+        }
+
+        let firstText = true;
+        for await (const event of sseEvents(res.body)) {
+          if (typeof event.error === "string") throw new Error(event.error);
+          if (event.done === true) finished = true;
+          if (event.stage === "model") {
+            step("Sealed by the Blackthorn client and sent to the GPU");
+            firstText = true;
+          }
+          if (event.stage === "continue") {
+            step("Reply reached the length limit for one turn; asking the model to continue");
+          }
+          if (typeof event.reasoning === "string") {
+            reasoning += event.reasoning;
+            write([...history, reply(reveal.shown())]);
+          }
+          if (typeof event.delta === "string") {
+            if (firstText) {
+              step("First encrypted block received and decrypted; writing the reply");
+              firstText = false;
+            }
+            reveal.push(event.delta);
+          }
+          const used = event.usage as { used?: unknown; window?: unknown } | undefined;
+          if (used && typeof used.used === "number") {
+            usage = { used: used.used, window: typeof used.window === "number" ? used.window : null };
+            const share = usage.window ? ` (${Math.round((usage.used / usage.window) * 100)}%)` : "";
+            step(`Context window in use: ${usage.used.toLocaleString()} tokens${share}`);
+          }
+          const update = event.search as Partial<SearchRecord> | undefined;
+          if (update && typeof update.query === "string") {
+            const record: SearchRecord = {
+              query: update.query,
+              status: update.status === "done" || update.status === "failed" ? update.status : "searching",
+              results: Array.isArray(update.results) ? update.results : [],
+            };
+            const index = searches.findIndex(
+              (item) => item.query === record.query && item.status === "searching",
+            );
+            if (index >= 0) searches[index] = record;
+            else searches.push(record);
+            step(
+              record.status === "searching"
+                ? `Searching the web: ${record.query}`
+                : record.status === "failed"
+                  ? `Web search failed: ${record.query}`
+                  : `Read ${record.results.length} search results for: ${record.query}`,
+            );
+          }
+        }
+
+        } catch (cause) {
+          // A resume can fail briefly while Blackthorn closes the turn that was
+          // cut off. With part of the reply in hand, wait and try again.
+          if (controller.signal.aborted || !partial || ++failures > 3) throw cause;
+          step("Blackthorn was not ready to continue; retrying");
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+          continue;
+        }
+
+        if (!finished) {
+          // The server ran out of time (or the connection dropped) mid-reply.
+          const progressed = reveal.received().length > partial.length;
+          if (progressed) failures = 0;
+          if (!progressed || resumes >= MAX_RESUMES) {
+            throw new Error(
+              reveal.received()
+                ? "The reply was cut off before it finished."
+                : "The model returned an empty reply.",
+            );
+          }
+          step("The server's time limit was reached; picking the reply up where it stopped");
         }
       }
       if (!reveal.received()) throw new Error("The model returned an empty reply.");
       await reveal.finish();
+      seconds = clock() / 1000;
+      activity.push({ at: clock(), text: "Finished" });
       write([...history, reply(reveal.received())]);
     } catch (cause) {
       // Stop keeps what was on screen; a failure keeps everything that arrived.
       const stopped = controller.signal.aborted;
       const answer = stopped ? reveal.shown() : reveal.received();
+      seconds = clock() / 1000;
+      activity.push({ at: clock(), text: stopped ? "Stopped" : "Failed" });
       if (!stopped && alive()) {
         setError({
           chatId,
@@ -304,6 +403,225 @@ export function Chat({
     onSessionChange();
   }
 
+  // The message box: centred under the heading on a new chat, docked at the
+  // bottom once the conversation has started.
+  const composer = (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        send(input);
+      }}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("Files")) {
+          event.preventDefault();
+          setDragging(true);
+        }
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(event) => {
+        if (event.dataTransfer.files.length === 0) return;
+        event.preventDefault();
+        setDragging(false);
+        addFiles(event.dataTransfer.files);
+      }}
+      className={empty ? "w-full" : "mx-auto w-full max-w-3xl px-4 pb-4"}
+    >
+      <div
+        className={`rounded-2xl border bg-surface p-2 ${
+          dragging ? "border-dashed border-muted" : "border-border"
+        }`}
+      >
+        {pending.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5 px-1 pb-2 pt-1">
+            {pending.map((file) => (
+              <li key={file.id}>
+                <FileChip
+                  name={file.name}
+                  attachment={file.attachment}
+                  status={file.status}
+                  error={file.error}
+                  onRemove={() =>
+                    setPending((previous) => previous.filter((item) => item.id !== file.id))
+                  }
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+        <label htmlFor="message" className="sr-only">
+          Message
+        </label>
+        <textarea
+          id="message"
+          ref={inputRef}
+          autoFocus
+          rows={1}
+          value={input}
+          onChange={(event) => {
+            setInput(event.target.value);
+            resizeInput();
+          }}
+          onPaste={(event) => {
+            if (event.clipboardData.files.length > 0) {
+              event.preventDefault();
+              addFiles(event.clipboardData.files);
+            }
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              send(input);
+            }
+          }}
+          placeholder="Send a message"
+          className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 outline-none placeholder:text-muted"
+        />
+        {dictation.error ? (
+          <p role="alert" className="px-2 pb-1 text-xs text-danger">
+            {dictation.error}
+          </p>
+        ) : dictation.state !== "idle" ? (
+          <p role="status" className="px-2 pb-1 text-xs text-muted">
+            {recording
+              ? `Listening in ${dictationLanguageName}… click the microphone again when you are done.`
+              : dictation.downloading !== null
+                ? `Downloading the speech model (first time only)… ${dictation.downloading}%`
+                : "Transcribing on this device…"}
+          </p>
+        ) : null}
+        <div className="mt-1 flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept={ACCEPT}
+            className="hidden"
+            onChange={(event) => {
+              if (event.target.files) addFiles(event.target.files);
+              event.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={pending.length >= MAX_ATTACHMENTS}
+            aria-label="Attach files"
+            title="Attach files: images, PDF, Word, Excel, text"
+            className="shrink-0 rounded-lg border border-border p-2 text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+          >
+            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+              <path
+                d="M13.200 7.300l-5.300 5.300a3.200 3.200 0 01-4.500-4.500l5.600-5.600a2.100 2.100 0 013 3l-5.500 5.500a1 1 0 01-1.500-1.500l5-5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          {models.length > 0 && (
+            <ModelPicker
+              models={models}
+              value={model}
+              onChange={(id) => {
+                setSavedModel(id);
+                saveModel(id);
+              }}
+            />
+          )}
+          {models.length > 0 && search !== null && (
+            <button
+              type="button"
+              aria-pressed={searchOn}
+              title={
+                searchOn
+                  ? `Web search is on: search queries are sent to ${search}, outside Blackthorn's encryption`
+                  : "Web search is off"
+              }
+              onClick={() => {
+                setSearchOn(!searchOn);
+                saveSearchEnabled(!searchOn);
+              }}
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm ${
+                searchOn
+                  ? "border-muted text-text"
+                  : "border-border text-muted hover:bg-surface-2"
+              }`}
+            >
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <g fill="none" stroke="currentColor" strokeWidth="1.3">
+                  <circle cx="8" cy="8" r="6.2" />
+                  <path d="M1.8 8h12.4M8 1.8c2 2 2 10.400 0 12.400M8 1.800c-2 2-2 10.400 0 12.400" />
+                </g>
+              </svg>
+              Web search
+            </button>
+          )}
+          {models.length === 0 && (
+            <p className="px-2 text-sm text-danger">
+              Blackthorn endpoint unreachable.{" "}
+              <button type="button" onClick={onSessionChange} className="underline">
+                Retry
+              </button>
+            </p>
+          )}
+          <span className="flex-1" />
+          <ContextRing
+            used={active?.usage?.used ?? 0}
+            window={active?.usage?.window ?? modelInfo?.contextWindow ?? null}
+          />
+          {dictation.supported && (
+            <button
+              type="button"
+              onClick={toggleDictation}
+              disabled={dictation.state === "transcribing"}
+              aria-pressed={recording}
+              aria-label={recording ? "Stop dictation" : "Dictate"}
+              title={
+                recording
+                  ? "Recording. Click to stop and insert the text."
+                  : `Dictate in ${dictationLanguageName} (transcribed on this device; change the language in Profile)`
+              }
+              className={`relative shrink-0 rounded-lg border p-2 disabled:opacity-50 ${
+                recording
+                  ? "border-text bg-text text-bg"
+                  : "border-border text-muted hover:bg-surface-2 hover:text-text"
+              }`}
+            >
+              {recording && (
+                <span className="absolute -right-1 -top-1 size-2.5 animate-pulse rounded-full bg-danger" />
+              )}
+              <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="5.800" y="1.800" width="4.400" height="7.400" rx="2.200" />
+                  <path d="M3.300 7.600a4.700 4.700 0 009.400 0M8 12.300v2M5.800 14.300h4.400" />
+                </g>
+              </svg>
+            </button>
+          )}
+          {busy ? (
+            <button
+              type="button"
+              onClick={() => abortRef.current?.abort()}
+              className="rounded-xl border border-border px-4 py-1.5 font-medium hover:bg-surface-2"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!canSend}
+              className="rounded-xl bg-send px-4 py-1.5 font-medium text-send-text disabled:opacity-40"
+            >
+              Send
+            </button>
+          )}
+        </div>
+      </div>
+    </form>
+  );
+
   return (
     <div className="flex h-dvh">
       <Sidebar
@@ -311,8 +629,10 @@ export function Chat({
         activeId={activeId}
         busyId={busyId}
         open={sidebarOpen}
+        collapsed={sidebarCollapsed}
         gated={gated}
         onClose={() => setSidebarOpen(false)}
+        onCollapse={() => setSidebarCollapsed(true)}
         onSelect={selectChat}
         onNew={newChat}
         onDelete={deleteChat}
@@ -335,30 +655,46 @@ export function Chat({
             <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
           </svg>
         </button>
+        {sidebarCollapsed && (
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            aria-label="Show chat list"
+            title="Show chat list"
+            className="absolute left-3 top-3 z-10 hidden rounded-lg border border-border bg-surface p-2 text-muted hover:text-text md:block"
+          >
+            <PanelIcon />
+          </button>
+        )}
 
-        <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
-          <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 pb-6 pt-16 md:pt-8">
-            {empty ? (
-              <div className="m-auto w-full max-w-md text-center">
-                <h1 className="text-xl font-semibold">Encrypted Superintelligence</h1>
+        {empty ? (
+          <div className="flex flex-1 flex-col overflow-y-auto px-4 pb-10 pt-16">
+            <div className="m-auto w-full max-w-2xl">
+              <div className="text-center">
+                <h1 className="text-2xl font-semibold">Encrypted Superintelligence</h1>
                 <p className="mt-2 text-sm text-muted">
                   Prompts and outputs are encrypted end-to-end, powered by Arcium Blackthorn.
                 </p>
-                <div className="mt-6 flex flex-col gap-2">
-                  {SUGGESTIONS.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      onClick={() => send(suggestion)}
-                      disabled={busy || !model}
-                      className="rounded-xl border border-border bg-surface px-4 py-2.5 text-left text-sm hover:bg-surface-2 disabled:opacity-50"
-                    >
-                      {suggestion}
-                    </button>
-                  ))}
-                </div>
               </div>
-            ) : (
-              messages.map((message, index) =>
+              <div className="mt-7">{composer}</div>
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                {SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    onClick={() => send(suggestion)}
+                    disabled={busy || !model}
+                    className="rounded-full border border-border px-3.5 py-1.5 text-sm text-muted hover:bg-surface-2 hover:text-text disabled:opacity-50"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
+              <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 pb-6 pt-16 md:pt-8">
+                {messages.map((message, index) =>
                 message.role === "user" ? (
                   <div key={index} className="flex max-w-[85%] flex-col items-end gap-1.5 self-end">
                     {Array.isArray(message.attachments) && message.attachments.length > 0 && (
@@ -376,249 +712,46 @@ export function Chat({
                   </div>
                 ) : (
                   <div key={index} className="flex flex-col gap-3">
+                    <Activity
+                      steps={message.activity}
+                      reasoning={message.reasoning}
+                      pending={
+                        !message.content ||
+                        (busyId === activeId && index === messages.length - 1)
+                      }
+                      seconds={message.seconds}
+                      label={
+                        message.searches?.some((item) => item.status === "searching")
+                          ? "Searching the web…"
+                          : message.content
+                            ? "Writing…"
+                            : "Thinking…"
+                      }
+                    />
                     <Searches searches={message.searches} />
-                    {message.content ? (
+                    {message.content && (
                       <div className="prose-chat">
                         <Markdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                           {message.content}
                         </Markdown>
                       </div>
-                    ) : (
-                      <div className="py-1">
-                        <ThinkingIndicator
-                          label={
-                            message.searches?.some((item) => item.status === "searching")
-                              ? "Searching the web…"
-                              : "Thinking…"
-                          }
-                        />
-                      </div>
                     )}
                   </div>
                 ),
-              )
-            )}
-            {error && error.chatId === activeId && (
-              <p
-                role="alert"
-                className="rounded-xl border border-danger/40 px-4 py-2.5 text-sm text-danger"
-              >
-                {error.message}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            send(input);
-          }}
-          onDragOver={(event) => {
-            if (event.dataTransfer.types.includes("Files")) {
-              event.preventDefault();
-              setDragging(true);
-            }
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(event) => {
-            if (event.dataTransfer.files.length === 0) return;
-            event.preventDefault();
-            setDragging(false);
-            addFiles(event.dataTransfer.files);
-          }}
-          className="mx-auto w-full max-w-3xl px-4 pb-4"
-        >
-          <div
-            className={`rounded-2xl border bg-surface p-2 ${
-              dragging ? "border-dashed border-muted" : "border-border"
-            }`}
-          >
-            {pending.length > 0 && (
-              <ul className="flex flex-wrap gap-1.5 px-1 pb-2 pt-1">
-                {pending.map((file) => (
-                  <li key={file.id}>
-                    <FileChip
-                      name={file.name}
-                      attachment={file.attachment}
-                      status={file.status}
-                      error={file.error}
-                      onRemove={() =>
-                        setPending((previous) => previous.filter((item) => item.id !== file.id))
-                      }
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
-            <label htmlFor="message" className="sr-only">
-              Message
-            </label>
-            <textarea
-              id="message"
-              ref={inputRef}
-              autoFocus
-              rows={1}
-              value={input}
-              onChange={(event) => {
-                setInput(event.target.value);
-                resizeInput();
-              }}
-              onPaste={(event) => {
-                if (event.clipboardData.files.length > 0) {
-                  event.preventDefault();
-                  addFiles(event.clipboardData.files);
-                }
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  send(input);
-                }
-              }}
-              placeholder="Send a message"
-              className="block max-h-[200px] w-full resize-none bg-transparent px-2 py-1.5 outline-none placeholder:text-muted"
-            />
-            {dictation.error ? (
-              <p role="alert" className="px-2 pb-1 text-xs text-danger">
-                {dictation.error}
-              </p>
-            ) : dictation.state !== "idle" ? (
-              <p role="status" className="px-2 pb-1 text-xs text-muted">
-                {recording
-                  ? `Listening in ${dictationLanguageName}… click the microphone again when you are done.`
-                  : dictation.downloading !== null
-                    ? `Downloading the speech model (first time only)… ${dictation.downloading}%`
-                    : "Transcribing on this device…"}
-              </p>
-            ) : null}
-            <div className="mt-1 flex items-center gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept={ACCEPT}
-                className="hidden"
-                onChange={(event) => {
-                  if (event.target.files) addFiles(event.target.files);
-                  event.target.value = "";
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={pending.length >= MAX_ATTACHMENTS}
-                aria-label="Attach files"
-                title="Attach files: images, PDF, Word, Excel, text"
-                className="shrink-0 rounded-lg border border-border p-2 text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
-              >
-                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                  <path
-                    d="M13.200 7.300l-5.300 5.300a3.200 3.200 0 01-4.500-4.500l5.600-5.600a2.100 2.100 0 013 3l-5.500 5.500a1 1 0 01-1.500-1.500l5-5"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.3"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
-              {models.length > 0 && (
-                <ModelPicker
-                  models={models}
-                  value={model}
-                  onChange={(id) => {
-                    setSavedModel(id);
-                    saveModel(id);
-                  }}
-                />
               )}
-              {models.length > 0 && search !== null && (
-                <button
-                  type="button"
-                  aria-pressed={searchOn}
-                  title={
-                    searchOn
-                      ? `Web search is on: search queries are sent to ${search}, outside Blackthorn's encryption`
-                      : "Web search is off"
-                  }
-                  onClick={() => {
-                    setSearchOn(!searchOn);
-                    saveSearchEnabled(!searchOn);
-                  }}
-                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm ${
-                    searchOn
-                      ? "border-muted text-text"
-                      : "border-border text-muted hover:bg-surface-2"
-                  }`}
-                >
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                    <g fill="none" stroke="currentColor" strokeWidth="1.3">
-                      <circle cx="8" cy="8" r="6.2" />
-                      <path d="M1.8 8h12.4M8 1.8c2 2 2 10.400 0 12.400M8 1.800c-2 2-2 10.400 0 12.400" />
-                    </g>
-                  </svg>
-                  Web search
-                </button>
-              )}
-              {models.length === 0 && (
-                <p className="px-2 text-sm text-danger">
-                  Blackthorn endpoint unreachable.{" "}
-                  <button type="button" onClick={onSessionChange} className="underline">
-                    Retry
-                  </button>
-                </p>
-              )}
-              <span className="flex-1" />
-              {dictation.supported && (
-                <button
-                  type="button"
-                  onClick={toggleDictation}
-                  disabled={dictation.state === "transcribing"}
-                  aria-pressed={recording}
-                  aria-label={recording ? "Stop dictation" : "Dictate"}
-                  title={
-                    recording
-                      ? "Recording. Click to stop and insert the text."
-                      : `Dictate in ${dictationLanguageName} (transcribed on this device; change the language in Profile)`
-                  }
-                  className={`relative shrink-0 rounded-lg border p-2 disabled:opacity-50 ${
-                    recording
-                      ? "border-text bg-text text-bg"
-                      : "border-border text-muted hover:bg-surface-2 hover:text-text"
-                  }`}
-                >
-                  {recording && (
-                    <span className="absolute -right-1 -top-1 size-2.5 animate-pulse rounded-full bg-danger" />
-                  )}
-                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                    <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                      <rect x="5.800" y="1.800" width="4.400" height="7.400" rx="2.200" />
-                      <path d="M3.300 7.600a4.700 4.700 0 009.400 0M8 12.300v2M5.800 14.300h4.400" />
-                    </g>
-                  </svg>
-                </button>
-              )}
-              {busy ? (
-                <button
-                  type="button"
-                  onClick={() => abortRef.current?.abort()}
-                  className="rounded-xl border border-border px-4 py-1.5 font-medium hover:bg-surface-2"
-                >
-                  Stop
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  disabled={!canSend}
-                  className="rounded-xl bg-send px-4 py-1.5 font-medium text-send-text disabled:opacity-40"
-                >
-                  Send
-                </button>
-              )}
+                {error && error.chatId === activeId && (
+                  <p
+                    role="alert"
+                    className="rounded-xl border border-danger/40 px-4 py-2.5 text-sm text-danger"
+                  >
+                    {error.message}
+                  </p>
+                )}
+              </div>
             </div>
-          </div>
-        </form>
+            {composer}
+          </>
+        )}
       </main>
     </div>
   );

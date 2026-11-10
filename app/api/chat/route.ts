@@ -17,8 +17,23 @@ const MAX_MESSAGES = 200;
 const MAX_CHARS = 500_000;
 /** Most web searches the model may run for one reply. */
 const MAX_SEARCHES = 4;
-/** Most model turns for one reply; the last one runs without tools. */
+/** Most tool-using model turns for one reply; the last one runs without tools. */
 const MAX_TURNS = 6;
+/**
+ * Tokens the model may write in one turn. Blackthorn's own default is 512,
+ * which cut long replies short. A reply that still hits this limit is
+ * continued automatically.
+ */
+const MAX_REPLY_TOKENS = Number(process.env.MAX_REPLY_TOKENS) || 16_384;
+/** Most automatic continuations of one reply within a request. */
+const MAX_CONTINUATIONS = 40;
+/**
+ * Stop before the hosting time limit (maxDuration) so the stream can end
+ * cleanly; the browser then asks for the rest in a new request.
+ */
+const SOFT_DEADLINE_MS = Number(process.env.SOFT_DEADLINE_MS) || 240_000;
+const CONTINUE_PROMPT =
+  "Continue your previous message from exactly where it stopped. Do not repeat anything already written, do not add an introduction or a note about continuing; begin with the very next word.";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 type ToolCall = { id: string; name: string; arguments: string };
@@ -67,7 +82,7 @@ function withAttachments(content: string, raw: unknown): string | null {
   return blocks.length > 0 ? `${blocks.join("\n\n")}\n\n${content}`.trim() : content;
 }
 
-function parseMessages(body: unknown): ChatMessage[] | null {
+function parseMessages(body: unknown, continuing: boolean): ChatMessage[] | null {
   const raw = (body as { messages?: unknown })?.messages;
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_MESSAGES) return null;
 
@@ -88,8 +103,24 @@ function parseMessages(body: unknown): ChatMessage[] | null {
     messages.push({ role, content });
   }
   const last = messages[messages.length - 1];
-  if (chars > MAX_CHARS || last.role !== "user" || !last.content) return null;
+  // A continuation ends with the partial reply; a new message ends with the user.
+  if (chars > MAX_CHARS || !last.content || last.role !== (continuing ? "assistant" : "user")) {
+    return null;
+  }
   return messages;
+}
+
+/**
+ * A continued reply starts a fresh piece of text, which usually lacks the
+ * space that belonged between it and the piece before. Returns what to put
+ * between the two.
+ */
+function seam(previous: string, next: string): string {
+  if (!previous || !next) return "";
+  if (/\s$/.test(previous) || /^\s/.test(next)) return "";
+  if (/[-(\[{"'“‘/#*_`]$/.test(previous)) return "";
+  if (/^[.,;:!?)\]}'"’”%]/.test(next)) return "";
+  return " ";
 }
 
 function error(message: string, status: number) {
@@ -107,7 +138,8 @@ async function modelTurn(
   withTools: boolean,
   signal: AbortSignal,
   onText: (text: string) => void,
-): Promise<{ text: string; calls: ToolCall[] }> {
+  onReasoning: (text: string) => void,
+): Promise<{ text: string; calls: ToolCall[]; finish: string | null; usedTokens: number | null }> {
   const res = await fetch(`${url}/chat/completions`, {
     method: "POST",
     headers: upstreamHeaders(),
@@ -115,6 +147,7 @@ async function modelTurn(
       model,
       stream: true,
       messages,
+      max_tokens: MAX_REPLY_TOKENS,
       ...(withTools ? { tools: [SEARCH_TOOL] } : {}),
     }),
     signal,
@@ -130,6 +163,8 @@ async function modelTurn(
   let emitted = 0; // how much of it has been forwarded
   let marker = -1; // where tool-call markup begins, once seen
   const calls: ToolCall[] = [];
+  let finish: string | null = null;
+  let usedTokens: number | null = null;
 
   // Forward text as it arrives, but never tool-call markup: the model sometimes
   // writes its calls as text ("<tool_call>…") instead of structured calls.
@@ -155,9 +190,18 @@ async function modelTurn(
     const failure = (event.error as { message?: string } | undefined)?.message;
     if (failure) throw new Error(failure);
 
-    const delta = (event.choices as { delta?: Record<string, unknown> }[] | undefined)?.[0]
-      ?.delta;
+    const total = (event.usage as { total_tokens?: unknown } | undefined)?.total_tokens;
+    if (typeof total === "number") usedTokens = total;
+
+    const choice = (
+      event.choices as { delta?: Record<string, unknown>; finish_reason?: unknown }[] | undefined
+    )?.[0];
+    if (typeof choice?.finish_reason === "string") finish = choice.finish_reason;
+    const delta = choice?.delta;
     if (!delta) continue;
+    // Shown as-is when a model sends its reasoning separately; this one does not.
+    const reasoning = delta.reasoning_content ?? delta.reasoning;
+    if (typeof reasoning === "string" && reasoning) onReasoning(reasoning);
     if (typeof delta.content === "string" && delta.content) {
       raw += delta.content;
       forward(false);
@@ -178,6 +222,8 @@ async function modelTurn(
   return {
     text: marker >= 0 ? raw.slice(0, marker).trimEnd() : raw,
     calls: structured.length > 0 || marker < 0 ? structured : parseTextCalls(raw.slice(marker)),
+    finish,
+    usedTokens,
   };
 }
 
@@ -233,17 +279,20 @@ export async function POST(request: NextRequest) {
   } catch {
     return error("Invalid JSON.", 400);
   }
-  const messages = parseMessages(body);
+  const options = body as { model?: unknown; search?: unknown; continue?: unknown };
+  const continuing = options.continue === true;
+  const messages = parseMessages(body, continuing);
   if (!messages) {
     return error("The message could not be sent. It may be empty or the attached files too long.", 400);
   }
-  const options = body as { model?: unknown; search?: unknown };
-
   let url: string;
   let model: string;
+  let contextWindow: number | null;
   let mode: "bundled" | "external";
   try {
-    model = await resolveModel(typeof options.model === "string" ? options.model : undefined);
+    const info = await resolveModel(typeof options.model === "string" ? options.model : undefined);
+    model = info.id;
+    contextWindow = info.contextWindow;
     url = await baseUrl();
     mode = await clientMode();
   } catch (cause) {
@@ -265,7 +314,17 @@ export async function POST(request: NextRequest) {
       }),
     },
     ...messages,
+    ...(continuing ? [{ role: "user" as const, content: CONTINUE_PROMPT }] : []),
   ];
+
+  // One signal for "the browser left" and "we are near the hosting time limit".
+  const upstream = new AbortController();
+  let timedOut = false;
+  const deadline = setTimeout(() => {
+    timedOut = true;
+    upstream.abort();
+  }, SOFT_DEADLINE_MS);
+  request.signal.addEventListener("abort", () => upstream.abort());
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -274,19 +333,42 @@ export async function POST(request: NextRequest) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       try {
         let searches = 0;
+        let toolTurns = 0;
+        let continuations = 0;
+        // Text a continued piece must be joined to (the partial reply so far).
+        let joinTo = continuing ? messages[messages.length - 1].content : "";
         // Tools stay on for every turn so calls arrive in structured form; the
         // search limit is enforced when a call is answered, and the number of
-        // turns is capped so a model that keeps calling cannot loop forever.
-        for (let turn = 0; turn < MAX_TURNS; turn++) {
-          const { text, calls } = await modelTurn(
+        // tool turns is capped so a model that keeps calling cannot loop forever.
+        for (;;) {
+          send({ stage: "model" });
+          const { text, calls, finish, usedTokens } = await modelTurn(
             url,
             model,
             conversation,
-            searching && turn < MAX_TURNS - 1,
-            request.signal, // stop generating when the browser disconnects
-            (delta) => send({ delta }),
+            searching && toolTurns < MAX_TURNS - 1,
+            upstream.signal,
+            (delta) => {
+              send({ delta: seam(joinTo, delta) + delta });
+              joinTo = "";
+            },
+            (reasoning) => send({ reasoning }),
           );
-          if (calls.length === 0) break;
+          if (usedTokens !== null) send({ usage: { used: usedTokens, window: contextWindow } });
+
+          if (calls.length === 0) {
+            // Cut off by the per-turn limit: ask for the rest and keep going.
+            if (finish === "length" && text && continuations < MAX_CONTINUATIONS) {
+              continuations += 1;
+              conversation.push({ role: "assistant", content: text });
+              conversation.push({ role: "user", content: CONTINUE_PROMPT });
+              joinTo = text;
+              send({ stage: "continue" });
+              continue;
+            }
+            break;
+          }
+          if (++toolTurns >= MAX_TURNS) break;
 
           conversation.push({
             role: "assistant",
@@ -337,8 +419,12 @@ export async function POST(request: NextRequest) {
             conversation.push({ role: "tool", tool_call_id: call.id, content });
           }
         }
+        send({ done: true });
       } catch (cause) {
-        if (!request.signal.aborted) {
+        if (timedOut) {
+          // Out of time for this request: the browser asks for the rest.
+          send({ truncated: true });
+        } else if (!request.signal.aborted) {
           console.error("Chat failed:", cause);
           send({
             error:
@@ -348,6 +434,7 @@ export async function POST(request: NextRequest) {
           });
         }
       } finally {
+        clearTimeout(deadline);
         try {
           controller.close();
         } catch {

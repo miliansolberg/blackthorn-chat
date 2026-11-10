@@ -8,7 +8,7 @@ type Session = {
   authed: boolean;
   gated: boolean;
   misconfigured: boolean;
-  models: { id: string; name: string }[];
+  models: { id: string; name: string; contextWindow: number | null }[];
   search: string | null;
 };
 

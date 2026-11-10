@@ -7,11 +7,19 @@ export type SearchRecord = {
   status: "searching" | "done" | "failed";
   results: { title: string; url: string }[];
 };
+/** One step the app took while producing a reply; `at` is ms since it began. */
+export type ActivityStep = { at: number; text: string };
 export type Message = {
   role: "user" | "assistant";
   content: string;
   /** Web searches the assistant ran while writing this reply. */
   searches?: SearchRecord[];
+  /** What the app did while writing this reply, for the activity view. */
+  activity?: ActivityStep[];
+  /** The model's reasoning, when a model sends it separately. */
+  reasoning?: string;
+  /** How long the reply took, in seconds. */
+  seconds?: number;
   /** Files attached to a user message, already converted to text. */
   attachments?: Attachment[];
 };
@@ -20,6 +28,8 @@ export type ChatRecord = {
   title: string;
   messages: Message[];
   updatedAt: number;
+  /** Tokens of the context window used after the latest reply. */
+  usage?: { used: number; window: number | null };
 };
 
 const CHATS_KEY = "blackthorn-chat:chats:v1";

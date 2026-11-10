@@ -21,6 +21,18 @@ browser ──HTTPS──> this app (/api/chat) ──> blackthorn serve ══s
 Prompts are plaintext up to the Blackthorn client and encrypted from there on.
 Whoever runs this app and the client can therefore see them; the GPU host cannot.
 
+## Long replies, context and activity
+
+- Blackthorn stops a reply at 512 tokens unless told otherwise. The server asks
+  for up to 16,384 tokens per turn and, if a reply still hits that limit, asks
+  the model to continue. A reply that outlasts one server request (240 s) is
+  picked up again by the browser until the model finishes.
+- The circle in the message box shows how much of the model's context window
+  the chat has used, from the token count Blackthorn reports.
+- Clicking "Thinking…" opens the activity view: each step the app took, with
+  timings. The current model does not send its reasoning separately; if a model
+  does, it is shown there.
+
 ## Web search
 
 The model can search the web through a `web_search` tool when a search key is

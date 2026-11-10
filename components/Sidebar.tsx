@@ -9,8 +9,10 @@ export function Sidebar({
   activeId,
   busyId,
   open,
+  collapsed,
   gated,
   onClose,
+  onCollapse,
   onSelect,
   onNew,
   onDelete,
@@ -25,8 +27,11 @@ export function Sidebar({
   activeId: string | null;
   busyId: string | null;
   open: boolean;
+  /** Hidden on wide screens (the panel is always a drawer on narrow ones). */
+  collapsed: boolean;
   gated: boolean;
   onClose: () => void;
+  onCollapse: () => void;
   onSelect: (id: string) => void;
   onNew: () => void;
   onDelete: (id: string) => void;
@@ -50,7 +55,7 @@ export function Sidebar({
         aria-label="Chats"
         className={`fixed inset-y-0 left-0 z-30 flex w-72 max-w-[85vw] flex-col border-r border-border bg-surface transition-transform duration-200 md:static md:z-auto md:w-64 md:translate-x-0 ${
           open ? "translate-x-0" : "-translate-x-full"
-        }`}
+        } ${collapsed ? "md:hidden" : ""}`}
       >
         <div className="flex items-center justify-between px-4 pt-4">
           <span className="font-semibold">Blackthorn Chat</span>
@@ -62,6 +67,14 @@ export function Sidebar({
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
               <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
+          </button>
+          <button
+            onClick={onCollapse}
+            aria-label="Hide chat list"
+            title="Hide chat list"
+            className="hidden rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-text md:block"
+          >
+            <PanelIcon />
           </button>
         </div>
 
@@ -154,6 +167,18 @@ export function Sidebar({
         />
       </aside>
     </>
+  );
+}
+
+/** A window with its left panel marked: the show/hide panel icon. */
+export function PanelIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+        <rect x="1.800" y="2.800" width="12.400" height="10.400" rx="2.200" />
+        <path d="M6.200 2.800v10.400" />
+      </g>
+    </svg>
   );
 }
 
