@@ -340,9 +340,9 @@ export function Chat({
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-5 px-4 pb-6 pt-16 md:pt-8">
             {empty ? (
               <div className="m-auto w-full max-w-md text-center">
-                <h1 className="text-xl font-semibold">What would you like to ask?</h1>
+                <h1 className="text-xl font-semibold">Encrypted Superintelligence</h1>
                 <p className="mt-2 text-sm text-muted">
-                  Prompts are sealed by the Blackthorn client before they reach the GPU.
+                  Prompts and outputs are encrypted end-to-end, powered by Arcium Blackthorn.
                 </p>
                 <div className="mt-6 flex flex-col gap-2">
                   {SUGGESTIONS.map((suggestion) => (
