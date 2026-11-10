@@ -42,3 +42,6 @@ next-env.d.ts
 
 # keep the example env file in git
 !.env.example
+
+# Blackthorn client, downloaded at build time
+/bin/

@@ -1,19 +1,25 @@
-/**
- * Talks to a Blackthorn client (`blackthorn serve`), which exposes an
- * OpenAI-compatible API and seals every request before it leaves that machine.
- */
+import { bundledClientUrl, hasBundledClient } from "./client-process";
 
-export function baseUrl(): string {
-  return (process.env.BLACKTHORN_BASE_URL || "http://127.0.0.1:8000/v1").replace(
-    /\/+$/,
-    "",
-  );
+/**
+ * Finds the Blackthorn client, which exposes an OpenAI-compatible API and seals
+ * every request before it leaves the machine it runs on. In order:
+ *
+ * 1. BLACKTHORN_BASE_URL – a client you run yourself.
+ * 2. The bundled client (bin/blackthorn + BLACKTHORN_TOKEN) – hosted deployments.
+ * 3. http://127.0.0.1:8000/v1 – `blackthorn serve` on your own machine.
+ */
+export async function baseUrl(): Promise<string> {
+  if (process.env.BLACKTHORN_BASE_URL) {
+    return process.env.BLACKTHORN_BASE_URL.replace(/\/+$/, "");
+  }
+  if (await hasBundledClient()) return bundledClientUrl();
+  return "http://127.0.0.1:8000/v1";
 }
 
 export function upstreamHeaders(): Record<string, string> {
   const headers: Record<string, string> = { "content-type": "application/json" };
-  // Only needed when the client sits behind an authenticating proxy.
-  if (process.env.BLACKTHORN_API_KEY) {
+  // Only needed when your own client sits behind an authenticating proxy.
+  if (process.env.BLACKTHORN_BASE_URL && process.env.BLACKTHORN_API_KEY) {
     headers.authorization = `Bearer ${process.env.BLACKTHORN_API_KEY}`;
   }
   return headers;
@@ -26,7 +32,7 @@ export async function resolveModel(): Promise<string> {
   if (process.env.BLACKTHORN_MODEL) return process.env.BLACKTHORN_MODEL;
   if (cachedModel && Date.now() - cachedModel.at < 5 * 60_000) return cachedModel.id;
 
-  const res = await fetch(`${baseUrl()}/models`, {
+  const res = await fetch(`${await baseUrl()}/models`, {
     headers: upstreamHeaders(),
     signal: AbortSignal.timeout(10_000),
     cache: "no-store",
