@@ -40,6 +40,60 @@ async function* readDeltas(body: ReadableStream<Uint8Array>) {
   }
 }
 
+/**
+ * Blackthorn delivers text in large sealed blocks a few seconds apart. This
+ * reveals the reply at the measured generation speed instead of block by block.
+ */
+function createReveal(signal: AbortSignal, onShow: (text: string) => void) {
+  const startedAt = performance.now();
+  let received = "";
+  let shown = 0;
+  let rate = 0; // characters per second
+  let finished = false;
+  let done: () => void = () => {};
+  const drained = new Promise<void>((resolve) => (done = resolve));
+
+  let last = performance.now();
+  let carry = 0;
+  // A timer rather than animation frames, so a background tab still finishes.
+  const timer = setInterval(() => {
+    const now = performance.now();
+    const backlog = received.length - shown;
+    if (signal.aborted || (finished && backlog === 0)) {
+      clearInterval(timer);
+      return done();
+    }
+    if (backlog > 0) {
+      carry += rate * ((now - last) / 1000);
+      const step = Math.min(backlog, Math.floor(carry));
+      if (step > 0) {
+        carry -= step;
+        shown += step;
+        onShow(received.slice(0, shown));
+      }
+    } else {
+      carry = 0;
+    }
+    last = now;
+  }, 30);
+
+  return {
+    push(delta: string) {
+      received += delta;
+      const seconds = (performance.now() - startedAt) / 1000;
+      rate = Math.min(2000, Math.max(40, received.length / seconds));
+    },
+    /** Everything has arrived: speed up a little, but keep the flow even. */
+    finish() {
+      rate = Math.max(rate, Math.min((received.length - shown) / 1.5, rate * 1.6));
+      finished = true;
+      return drained;
+    },
+    received: () => received,
+    shown: () => received.slice(0, shown),
+  };
+}
+
 export function Chat({
   model,
   gated,
@@ -56,6 +110,7 @@ export function Chat({
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const chatIdRef = useRef(0); // bumped by "New chat" so a stopped reply cannot reappear
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Follow the stream unless the reader has scrolled up.
@@ -90,6 +145,12 @@ export function Chat({
 
     const controller = new AbortController();
     abortRef.current = controller;
+    const chatId = chatIdRef.current;
+    const current = () => chatIdRef.current === chatId;
+    const reveal = createReveal(controller.signal, (text) => {
+      if (current()) setMessages([...history, { role: "assistant", content: text }]);
+    });
+
     let answer = "";
     try {
       const res = await fetch("/api/chat", {
@@ -106,19 +167,23 @@ export function Chat({
         const body = await res.json().catch(() => null);
         throw new Error(body?.error ?? `Request failed (${res.status}).`);
       }
-      for await (const delta of readDeltas(res.body)) {
-        answer += delta;
-        setMessages([...history, { role: "assistant", content: answer }]);
-      }
-      if (!answer) throw new Error("The model returned an empty reply.");
+      for await (const delta of readDeltas(res.body)) reveal.push(delta);
+      if (!reveal.received()) throw new Error("The model returned an empty reply.");
+      await reveal.finish();
+      answer = reveal.received();
     } catch (cause) {
-      const aborted = controller.signal.aborted;
-      if (!aborted) {
-        setError(cause instanceof Error ? cause.message : "Something went wrong.");
+      if (controller.signal.aborted) {
+        answer = reveal.shown(); // Stop keeps what was on screen
+      } else {
+        answer = reveal.received();
+        if (current()) setError(cause instanceof Error ? cause.message : "Something went wrong.");
       }
       // Keep a partial answer; otherwise drop the empty placeholder.
-      setMessages(answer ? [...history, { role: "assistant", content: answer }] : history);
+      if (current()) {
+        setMessages(answer ? [...history, { role: "assistant", content: answer }] : history);
+      }
     } finally {
+      controller.abort(); // ends the reveal loop on every path
       setStreaming(false);
       abortRef.current = null;
       inputRef.current?.focus();
@@ -126,6 +191,7 @@ export function Chat({
   }
 
   function newChat() {
+    chatIdRef.current += 1;
     abortRef.current?.abort();
     setMessages([]);
     setError(null);
