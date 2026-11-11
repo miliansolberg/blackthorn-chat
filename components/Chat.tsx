@@ -8,10 +8,10 @@ import {
   loadChats,
   loadModel,
   loadSearchEnabled,
-  saveChats,
   saveModel,
   saveSearchEnabled,
   touched,
+  writeChats,
   type ActivityStep,
   type ChatRecord,
   type Message,
@@ -26,15 +26,12 @@ import {
   type PendingFile,
 } from "@/lib/attachments";
 import { createReveal, sseEvents } from "@/lib/stream";
-import {
-  DICTATION_LANGUAGES,
-  loadDictationLanguage,
-  saveDictationLanguage,
-  useDictation,
-} from "@/lib/dictation";
+import { DICTATION_LANGUAGES, useDictation } from "@/lib/dictation";
+import { applyTheme, loadSettings, saveSettings, type Settings as SettingsValue } from "@/lib/settings";
 import { Activity } from "./Activity";
 import { ContextRing } from "./ContextRing";
 import { ModelPicker } from "./ModelPicker";
+import { Settings } from "./Settings";
 import { PanelIcon, Sidebar } from "./Sidebar";
 
 type ModelInfo = { id: string; name: string; contextWindow: number | null };
@@ -80,7 +77,18 @@ export function Chat({
   onSessionChange: () => void;
 }) {
   // This component only mounts in the browser, after the session check.
-  const [chats, setChats] = useState<ChatRecord[]>(loadChats);
+  const [chats, setChats] = useState<ChatRecord[]>([]);
+  // False until the saved chats have been read from the browser's database.
+  const [loaded, setLoaded] = useState(false);
+  const savedRef = useRef(new Map<string, ChatRecord>());
+  const [settings, setSettings] = useState(loadSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  function changeSettings(next: SettingsValue) {
+    setSettings(next);
+    saveSettings(next);
+    applyTheme(next.theme);
+  }
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<{ chatId: string; message: string } | null>(null);
@@ -94,7 +102,7 @@ export function Chat({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Dictated words are added to the end of whatever is in the box.
-  const [dictationLanguage, setDictationLanguage] = useState(loadDictationLanguage);
+  const dictationLanguage = settings.dictationLanguage;
   const dictationLanguageName =
     DICTATION_LANGUAGES.find((language) => language.code === dictationLanguage)?.name ?? "English";
   const dictation = useDictation(dictationLanguage, (spoken) => {
@@ -122,16 +130,42 @@ export function Chat({
   const empty = messages.length === 0;
   const busy = busyId !== null;
 
-  // Save shortly after changes settle, and right away when the page is hidden.
+  // Read the saved chats once, keeping any chat started in the meantime.
   useEffect(() => {
-    const timer = setTimeout(() => saveChats(chats), 300);
-    const flush = () => saveChats(chats);
-    window.addEventListener("pagehide", flush);
+    let cancelled = false;
+    loadChats().then((stored) => {
+      if (cancelled) return;
+      for (const chat of stored) savedRef.current.set(chat.id, chat);
+      setChats((current) => [
+        ...current,
+        ...stored.filter((chat) => !current.some((item) => item.id === chat.id)),
+      ]);
+      setLoaded(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Save what changed shortly after changes settle, and right away when the
+  // page is hidden. Only chats that differ from what is stored are written.
+  useEffect(() => {
+    if (!loaded) return;
+    const persist = () => {
+      const saved = savedRef.current;
+      const changed = chats.filter((chat) => saved.get(chat.id) !== chat);
+      const removed = [...saved.keys()].filter((id) => !chats.some((chat) => chat.id === id));
+      for (const chat of changed) saved.set(chat.id, chat);
+      for (const id of removed) saved.delete(id);
+      void writeChats(changed, removed);
+    };
+    const timer = setTimeout(persist, 300);
+    window.addEventListener("pagehide", persist);
     return () => {
       clearTimeout(timer);
-      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("pagehide", persist);
     };
-  }, [chats]);
+  }, [chats, loaded]);
 
   // Follow the stream unless the reader has scrolled up.
   useEffect(() => {
@@ -256,6 +290,10 @@ export function Chat({
             continue: partial !== "",
             model,
             search: searchOn && search !== null,
+            sampling: settings.sampling,
+            connectors: settings.connectors
+              .filter((connector) => connector.enabled)
+              .map(({ name, url, token }) => ({ name, url, token })),
           }),
           signal: controller.signal,
         });
@@ -276,6 +314,27 @@ export function Chat({
           if (event.stage === "model") {
             step("Sealed by the Blackthorn client and sent to the GPU");
             firstText = true;
+          }
+          if (event.stage === "connectors") step("Connecting to connectors");
+          const connector = event.connector as
+            | { name?: string; tools?: number; error?: string }
+            | undefined;
+          if (connector?.name) {
+            step(
+              connector.error
+                ? `Connector ${connector.name} is unavailable: ${connector.error}`
+                : `Connector ${connector.name} ready with ${connector.tools ?? 0} tools`,
+            );
+          }
+          const tool = event.tool as { connector?: string; name?: string; status?: string } | undefined;
+          if (tool?.name) {
+            step(
+              tool.status === "calling"
+                ? `Calling ${tool.name} on ${tool.connector}`
+                : tool.status === "failed"
+                  ? `${tool.name} on ${tool.connector} failed`
+                  : `${tool.name} on ${tool.connector} returned a result`,
+            );
           }
           if (event.stage === "continue") {
             step("Reply reached the length limit for one turn; asking the model to continue");
@@ -395,6 +454,14 @@ export function Chat({
     setChats([]);
     setActiveId(null);
     setError(null);
+  }
+
+  /** Adds imported chats that are not here yet; returns how many were added. */
+  function importChats(imported: ChatRecord[]): number {
+    const fresh = imported.filter((chat) => !chats.some((item) => item.id === chat.id));
+    for (const chat of fresh) deletedRef.current.delete(chat.id);
+    if (fresh.length > 0) setChats((previous) => [...previous, ...fresh]);
+    return fresh.length;
   }
 
   async function signOut() {
@@ -581,7 +648,7 @@ export function Chat({
               title={
                 recording
                   ? "Recording. Click to stop and insert the text."
-                  : `Dictate in ${dictationLanguageName} (transcribed on this device; change the language in Profile)`
+                  : `Dictate in ${dictationLanguageName} (transcribed on this device; change the language in Settings)`
               }
               className={`relative shrink-0 rounded-lg border p-2 disabled:opacity-50 ${
                 recording
@@ -637,13 +704,19 @@ export function Chat({
         onNew={newChat}
         onDelete={deleteChat}
         onDeleteAll={deleteAllChats}
-        dictationLanguage={dictation.supported ? dictationLanguage : null}
-        onDictationLanguage={(code) => {
-          setDictationLanguage(code);
-          saveDictationLanguage(code);
-        }}
+        onOpenSettings={() => setSettingsOpen(true)}
         onSignOut={signOut}
       />
+
+      {settingsOpen && (
+        <Settings
+          settings={settings}
+          dictationSupported={dictation.supported}
+          onChange={changeSettings}
+          onImport={importChats}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         <button

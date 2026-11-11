@@ -7,6 +7,13 @@ import {
   resolveModel,
   upstreamHeaders,
 } from "@/lib/blackthorn";
+import {
+  MAX_CONNECTORS,
+  openConnectors,
+  toolDefinitions,
+  type ConnectorConfig,
+  type ConnectorSession,
+} from "@/lib/mcp";
 import { SEARCH_TOOL, formatResults, searchProvider, webSearch } from "@/lib/search";
 import { sseEvents } from "@/lib/stream";
 import { buildSystemPrompt } from "@/lib/system-prompt";
@@ -18,7 +25,9 @@ const MAX_CHARS = 500_000;
 /** Most web searches the model may run for one reply. */
 const MAX_SEARCHES = 4;
 /** Most tool-using model turns for one reply; the last one runs without tools. */
-const MAX_TURNS = 6;
+const MAX_TURNS = 8;
+/** Most connector tool calls for one reply. */
+const MAX_TOOL_CALLS = 12;
 /**
  * Tokens the model may write in one turn. Blackthorn's own default is 512,
  * which cut long replies short. A reply that still hits this limit is
@@ -123,6 +132,37 @@ function seam(previous: string, next: string): string {
   return " ";
 }
 
+/** The sampling settings Blackthorn accepts, checked against its ranges. */
+function parseSampling(raw: unknown): Record<string, number> {
+  const input = (raw ?? {}) as Record<string, unknown>;
+  const sampling: Record<string, number> = {};
+  const take = (from: string, to: string, min: number, max: number, integer = false) => {
+    const value = input[from];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) return;
+    sampling[to] = integer ? Math.round(value) : value;
+  };
+  take("temperature", "temperature", 0, 2);
+  take("topP", "top_p", 0.01, 1);
+  take("topK", "top_k", 1, 500, true);
+  take("repetitionPenalty", "repetition_penalty", 1, 2);
+  return sampling;
+}
+
+function parseConnectors(raw: unknown): ConnectorConfig[] {
+  if (!Array.isArray(raw)) return [];
+  const connectors: ConnectorConfig[] = [];
+  for (const item of raw.slice(0, MAX_CONNECTORS)) {
+    const { name, url, token } = (item ?? {}) as Record<string, unknown>;
+    if (typeof url !== "string" || !url || url.length > 2000) continue;
+    connectors.push({
+      name: (typeof name === "string" && name.trim() ? name.trim() : "Connector").slice(0, 60),
+      url,
+      token: typeof token === "string" ? token.slice(0, 4000) : "",
+    });
+  }
+  return connectors;
+}
+
 function error(message: string, status: number) {
   return Response.json({ error: message }, { status });
 }
@@ -135,7 +175,8 @@ async function modelTurn(
   url: string,
   model: string,
   messages: UpstreamMessage[],
-  withTools: boolean,
+  tools: unknown[],
+  sampling: Record<string, number>,
   signal: AbortSignal,
   onText: (text: string) => void,
   onReasoning: (text: string) => void,
@@ -148,7 +189,8 @@ async function modelTurn(
       stream: true,
       messages,
       max_tokens: MAX_REPLY_TOKENS,
-      ...(withTools ? { tools: [SEARCH_TOOL] } : {}),
+      ...sampling,
+      ...(tools.length > 0 ? { tools } : {}),
     }),
     signal,
     cache: "no-store",
@@ -279,7 +321,13 @@ export async function POST(request: NextRequest) {
   } catch {
     return error("Invalid JSON.", 400);
   }
-  const options = body as { model?: unknown; search?: unknown; continue?: unknown };
+  const options = body as {
+    model?: unknown;
+    search?: unknown;
+    continue?: unknown;
+    sampling?: unknown;
+    connectors?: unknown;
+  };
   const continuing = options.continue === true;
   const messages = parseMessages(body, continuing);
   if (!messages) {
@@ -302,6 +350,8 @@ export async function POST(request: NextRequest) {
 
   const provider = searchProvider();
   const searching = provider !== null && options.search === true;
+  const sampling = parseSampling(options.sampling);
+  const connectorConfigs = parseConnectors(options.connectors);
   const conversation: UpstreamMessage[] = [
     {
       role: "system",
@@ -310,6 +360,7 @@ export async function POST(request: NextRequest) {
         clientMode: mode,
         searchProvider: searching ? provider.name : null,
         searchAvailable: provider !== null,
+        connectors: connectorConfigs.map((connector) => connector.name),
         extra: process.env.SYSTEM_PROMPT,
       }),
     },
@@ -331,10 +382,22 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       const send = (event: unknown) =>
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      let connectors: ConnectorSession | null = null;
       try {
+        if (connectorConfigs.length > 0) {
+          send({ stage: "connectors" });
+          connectors = await openConnectors(connectorConfigs);
+          for (const status of connectors.status) send({ connector: status });
+        }
+        const connectorTools = connectors?.tools ?? [];
+        const tools = [...(searching ? [SEARCH_TOOL] : []), ...toolDefinitions(connectorTools)];
+
         let searches = 0;
+        let toolCalls = 0;
         let toolTurns = 0;
         let continuations = 0;
+        // Text written before a tool call is separated from what follows it.
+        let afterTools = false;
         // Text a continued piece must be joined to (the partial reply so far).
         let joinTo = continuing ? messages[messages.length - 1].content : "";
         // Tools stay on for every turn so calls arrive in structured form; the
@@ -346,11 +409,13 @@ export async function POST(request: NextRequest) {
             url,
             model,
             conversation,
-            searching && toolTurns < MAX_TURNS - 1,
+            toolTurns < MAX_TURNS - 1 ? tools : [],
+            sampling,
             upstream.signal,
             (delta) => {
-              send({ delta: seam(joinTo, delta) + delta });
+              send({ delta: (afterTools ? "\n\n" : seam(joinTo, delta)) + delta });
               joinTo = "";
+              afterTools = false;
             },
             (reasoning) => send({ reasoning }),
           );
@@ -369,6 +434,7 @@ export async function POST(request: NextRequest) {
             break;
           }
           if (++toolTurns >= MAX_TURNS) break;
+          if (text) afterTools = true;
 
           conversation.push({
             role: "assistant",
@@ -380,16 +446,34 @@ export async function POST(request: NextRequest) {
             })),
           });
           for (const call of calls) {
-            let query = "";
+            let args: Record<string, unknown> = {};
             try {
-              const parsed = JSON.parse(call.arguments) as { query?: unknown };
-              if (typeof parsed.query === "string") query = parsed.query.trim().slice(0, 300);
+              const parsed: unknown = JSON.parse(call.arguments || "{}");
+              if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
             } catch {
-              // handled below
+              // handled below as an invalid call
             }
+            const query = typeof args.query === "string" ? args.query.trim().slice(0, 300) : "";
+            const connectorTool = connectorTools.find((tool) => tool.name === call.name);
 
             let content: string;
-            if (call.name !== "web_search" || !query) {
+            if (connectorTool) {
+              const label = { connector: connectorTool.connector, name: connectorTool.toolName };
+              if (toolCalls >= MAX_TOOL_CALLS) {
+                content = "Tool call limit reached. Answer now from what you already have.";
+              } else {
+                toolCalls += 1;
+                send({ tool: { ...label, status: "calling" } });
+                try {
+                  content = await connectorTool.call(args);
+                  send({ tool: { ...label, status: "done" } });
+                } catch (cause) {
+                  console.error(`Connector tool ${call.name} failed:`, cause);
+                  send({ tool: { ...label, status: "failed" } });
+                  content = "The tool call failed. Continue without it and say that it failed.";
+                }
+              }
+            } else if (call.name !== "web_search" || !query) {
               content = "Invalid tool call. Answer without it.";
             } else if (!searching) {
               content = "Web search is off for this message. Answer without searching.";
@@ -435,6 +519,7 @@ export async function POST(request: NextRequest) {
         }
       } finally {
         clearTimeout(deadline);
+        await connectors?.close();
         try {
           controller.close();
         } catch {

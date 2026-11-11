@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ChatRecord } from "@/lib/chats";
-import { DICTATION_LANGUAGES } from "@/lib/dictation";
 
 export function Sidebar({
   chats,
@@ -18,11 +17,9 @@ export function Sidebar({
   onDelete,
   onDeleteAll,
   onSignOut,
-  dictationLanguage,
-  onDictationLanguage,
+  onOpenSettings,
 }: {
-  dictationLanguage: string | null;
-  onDictationLanguage: (code: string) => void;
+  onOpenSettings: () => void;
   chats: ChatRecord[];
   activeId: string | null;
   busyId: string | null;
@@ -162,8 +159,7 @@ export function Sidebar({
           chatCount={chats.length}
           onDeleteAll={onDeleteAll}
           onSignOut={onSignOut}
-          dictationLanguage={dictationLanguage}
-          onDictationLanguage={onDictationLanguage}
+          onOpenSettings={onOpenSettings}
         />
       </aside>
     </>
@@ -188,11 +184,9 @@ function Profile({
   chatCount,
   onDeleteAll,
   onSignOut,
-  dictationLanguage,
-  onDictationLanguage,
+  onOpenSettings,
 }: {
-  dictationLanguage: string | null;
-  onDictationLanguage: (code: string) => void;
+  onOpenSettings: () => void;
   gated: boolean;
   chatCount: number;
   onDeleteAll: () => void;
@@ -231,31 +225,16 @@ function Profile({
           <p className="px-3 pb-1 pt-2 text-xs text-muted">
             {gated ? "Signed in with the access password" : "No sign-in on this deployment"}
           </p>
-          {dictationLanguage !== null && (
-            <div className="px-3 pb-2 pt-1">
-              <p className="pb-1.5 text-xs text-muted">Dictation language</p>
-              <div className="flex flex-wrap gap-1">
-                {DICTATION_LANGUAGES.map((language) => {
-                  const selected = language.code === dictationLanguage;
-                  return (
-                    <button
-                      key={language.code}
-                      type="button"
-                      aria-pressed={selected}
-                      onClick={() => onDictationLanguage(language.code)}
-                      className={`rounded-md border px-2 py-0.5 text-xs ${
-                        selected
-                          ? "border-text bg-text text-bg"
-                          : "border-border text-muted hover:bg-surface-2 hover:text-text"
-                      }`}
-                    >
-                      {language.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onOpenSettings();
+            }}
+            className={itemClass}
+          >
+            Settings
+          </button>
           <button
             role="menuitem"
             disabled={chatCount === 0}

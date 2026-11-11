@@ -28,30 +28,6 @@ export const DICTATION_LANGUAGES = [
   { code: "pl", name: "Polish" },
 ] as const;
 
-const LANGUAGE_KEY = "blackthorn-chat:dictation-language";
-
-/** The saved dictation language, else the browser's language, else English. */
-export function loadDictationLanguage(): string {
-  const known = (code: string | null | undefined) =>
-    DICTATION_LANGUAGES.find((language) => language.code === code)?.code;
-  try {
-    const saved = known(localStorage.getItem(LANGUAGE_KEY));
-    if (saved) return saved;
-  } catch {
-    // fall through to the browser language
-  }
-  const browser = (navigator.language || "en").slice(0, 2).toLowerCase();
-  return known(browser === "nb" || browser === "nn" ? "no" : browser) ?? "en";
-}
-
-export function saveDictationLanguage(code: string): void {
-  try {
-    localStorage.setItem(LANGUAGE_KEY, code);
-  } catch {
-    // ignore
-  }
-}
-
 const SAMPLE_RATE = 16_000;
 const MAX_SECONDS = 180;
 

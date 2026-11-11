@@ -5,8 +5,8 @@ encrypted inference. Next.js (App Router), streaming replies, markdown rendering
 a chat list saved in the browser, a model selector and an optional
 shared-password gate.
 
-Chat history is stored in the browser's localStorage only (unencrypted, per
-device); deleting a chat in the left panel removes it from there.
+Chat history is stored in the browser only (IndexedDB, unencrypted, per device);
+deleting a chat in the left panel removes it from there.
 
 ## How it reaches Blackthorn
 
@@ -32,6 +32,27 @@ Whoever runs this app and the client can therefore see them; the GPU host cannot
 - Clicking "Thinking…" opens the activity view: each step the app took, with
   timings. The current model does not send its reasoning separately; if a model
   does, it is shown there.
+
+## Settings
+
+Profile, then Settings:
+
+- **General:** dark or light theme; dictation language (English by default).
+- **Model:** temperature, top-p, top-k and repetition penalty, the sampling
+  settings Blackthorn accepts. Each is off by default, which uses the model's
+  default (the same answer every time).
+- **Connectors:** remote MCP servers whose tools the model may call
+  (`lib/mcp.ts`). The app's server connects to them, so what the model sends to
+  a connector leaves Blackthorn's encryption. Open servers and ones that take a
+  bearer token work; OAuth sign-in does not. Hosted deployments only accept
+  public https addresses.
+- **Import chats:** reads a Claude or ChatGPT data export (the .zip or its
+  conversations.json) in the browser and adds the conversations to the chat
+  list (`lib/import.ts`).
+
+Settings are saved in the browser's localStorage. Chats are saved in the
+browser's IndexedDB (they moved there from localStorage so that an imported
+history fits).
 
 ## Web search
 
@@ -121,7 +142,10 @@ components/           App, Login, Chat, Sidebar, ThinkingIndicator
 lib/auth.ts           password gate
 lib/blackthorn.ts     endpoint and model list
 lib/client-process.ts runs the bundled client on hosted deployments
-lib/chats.ts          chat history in the browser's localStorage
+lib/chats.ts          chat history in the browser's IndexedDB
+lib/settings.ts       theme, sampling settings and connectors
+lib/import.ts         Claude and ChatGPT export import
+lib/mcp.ts            connectors (remote MCP servers)
 lib/stream.ts         stream parsing and steady text reveal
 lib/search.ts         web search providers and the search tool
 lib/attachments.ts    turns attached files into text in the browser

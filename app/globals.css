@@ -1,37 +1,37 @@
 @import "tailwindcss";
 
-/* Theme built around the deep green #041B15: the dark background, and the
-   ink colour in light mode. Surfaces step up from it in even increments. */
+/* Theme built around the deep green #041B15. Dark is the default; the light
+   theme (Settings, Appearance) sets data-theme="light" on <html>. */
 :root {
-  --bg: #f0f5f3;
-  --surface: #ffffff;
-  --surface-2: #e1ebe7;
-  --border: #d0ddd8;
+  --bg: #041b15;
+  --surface: #0d2922;
+  --surface-2: #173730;
+  --border: #25473e;
+  --text: #e9f1ee;
+  --muted: #94aba3;
+  --accent: #7fd8b8;
+  --accent-text: #041b15;
+  --danger: #ff8a7d;
+  --spinner: #ffffff;
+  --send: #ffffff;
+  --send-text: #041b15;
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #ffffff;
+  --surface: #f6faf8;
+  --surface-2: #e8f1ed;
+  --border: #d5e3dc;
   --text: #041b15;
-  --muted: #586b64;
+  --muted: #55695f;
   --accent: #0b7a57;
   --accent-text: #ffffff;
   --danger: #c0362c;
   --spinner: #041b15;
   --send: #041b15;
   --send-text: #ffffff;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #041b15;
-    --surface: #0d2922;
-    --surface-2: #173730;
-    --border: #25473e;
-    --text: #e9f1ee;
-    --muted: #94aba3;
-    --accent: #7fd8b8;
-    --accent-text: #041b15;
-    --danger: #ff8a7d;
-    --spinner: #ffffff;
-    --send: #ffffff;
-    --send-text: #041b15;
-  }
+  color-scheme: light;
 }
 
 @theme inline {
@@ -173,4 +173,35 @@ body {
 textarea:focus-visible,
 input:focus-visible {
   outline: none;
+}
+
+/* Sliders in Settings */
+.slider {
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  outline-offset: 6px;
+}
+.slider:disabled {
+  opacity: 0.45;
+}
+.slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--send);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+.slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--send);
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px var(--border);
+  cursor: pointer;
 }
