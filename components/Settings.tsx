@@ -6,6 +6,7 @@ import { parseExport } from "@/lib/import";
 import type { ChatRecord } from "@/lib/chats";
 import {
   MAX_CONNECTORS,
+  MAX_SYSTEM_PROMPT_CHARS,
   newConnector,
   type Connector,
   type Sampling,
@@ -93,7 +94,9 @@ export function Settings({
             {tab === "model" && (
               <Model
                 sampling={settings.sampling}
+                systemPrompt={settings.systemPrompt}
                 onChange={(sampling) => onChange({ ...settings, sampling })}
+                onSystemPrompt={(systemPrompt) => onChange({ ...settings, systemPrompt })}
               />
             )}
             {tab === "connectors" && (
@@ -285,10 +288,45 @@ const PARAMETERS: {
   },
 ];
 
-function Model({ sampling, onChange }: { sampling: Sampling; onChange: (sampling: Sampling) => void }) {
+function Model({
+  sampling,
+  systemPrompt,
+  onChange,
+  onSystemPrompt,
+}: {
+  sampling: Sampling;
+  systemPrompt: string;
+  onChange: (sampling: Sampling) => void;
+  onSystemPrompt: (systemPrompt: string) => void;
+}) {
   const custom = PARAMETERS.some((parameter) => sampling[parameter.key] !== null);
   return (
     <>
+      <Section
+        title="Custom system prompt"
+        hint="Instructions the assistant follows in every new message: a role, a tone, a language, things to always or never do. They are added to the assistant's built-in knowledge of how this app works."
+      >
+        <textarea
+          value={systemPrompt}
+          onChange={(event) => onSystemPrompt(event.target.value)}
+          maxLength={MAX_SYSTEM_PROMPT_CHARS}
+          rows={5}
+          aria-label="Custom system prompt"
+          placeholder="For example: Answer in Norwegian. Keep answers short and use bullet points."
+          className="block w-full resize-y rounded-lg border border-border bg-surface px-3 py-2 text-sm outline-none placeholder:text-muted"
+        />
+        <div className="mt-1.5 flex items-center justify-between text-xs text-muted">
+          <span>
+            {systemPrompt.length.toLocaleString()} / {MAX_SYSTEM_PROMPT_CHARS.toLocaleString()}
+          </span>
+          {systemPrompt && (
+            <button type="button" onClick={() => onSystemPrompt("")} className="hover:text-text">
+              Clear
+            </button>
+          )}
+        </div>
+      </Section>
+      <h3 className="pt-5 text-sm font-medium">Sampling</h3>
       <p className="pb-2 text-sm text-muted">
         These apply to every new message. A setting that is switched off uses the model&apos;s default,
         which gives the same answer each time for the same question.

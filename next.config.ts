@@ -6,6 +6,7 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/api/chat": ["./bin/blackthorn"],
     "/api/session": ["./bin/blackthorn"],
+    "/api/attestation": ["./bin/blackthorn"],
   },
   cacheComponents: true,
   partialPrefetching: true,

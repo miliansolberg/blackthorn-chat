@@ -43,6 +43,16 @@ async function executablePath(): Promise<string> {
   }
 }
 
+/**
+ * The Blackthorn client program this server can run directly (for its status
+ * check): BLACKTHORN_BIN if set, else the bundled Linux build.
+ */
+export async function clientBinary(): Promise<string | null> {
+  if (process.env.BLACKTHORN_BIN) return process.env.BLACKTHORN_BIN;
+  if (!(await hasBundledClient())) return null;
+  return executablePath();
+}
+
 async function start(): Promise<State> {
   const binary = await executablePath();
   const child = spawn(binary, ["serve", "--port", String(PORT)], {

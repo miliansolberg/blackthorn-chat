@@ -26,6 +26,8 @@ const MAX_CHARS = 500_000;
 const MAX_SEARCHES = 4;
 /** Most tool-using model turns for one reply; the last one runs without tools. */
 const MAX_TURNS = 8;
+/** Longest custom system prompt accepted from Settings. */
+const MAX_INSTRUCTION_CHARS = 8000;
 /** Most connector tool calls for one reply. */
 const MAX_TOOL_CALLS = 12;
 /**
@@ -327,6 +329,7 @@ export async function POST(request: NextRequest) {
     continue?: unknown;
     sampling?: unknown;
     connectors?: unknown;
+    instructions?: unknown;
   };
   const continuing = options.continue === true;
   const messages = parseMessages(body, continuing);
@@ -362,6 +365,10 @@ export async function POST(request: NextRequest) {
         searchAvailable: provider !== null,
         connectors: connectorConfigs.map((connector) => connector.name),
         extra: process.env.SYSTEM_PROMPT,
+        userInstructions:
+          typeof options.instructions === "string"
+            ? options.instructions.trim().slice(0, MAX_INSTRUCTION_CHARS)
+            : "",
       }),
     },
     ...messages,

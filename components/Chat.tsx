@@ -29,6 +29,7 @@ import { createReveal, sseEvents } from "@/lib/stream";
 import { DICTATION_LANGUAGES, useDictation } from "@/lib/dictation";
 import { applyTheme, loadSettings, saveSettings, type Settings as SettingsValue } from "@/lib/settings";
 import { Activity } from "./Activity";
+import { Attestation } from "./Attestation";
 import { ContextRing } from "./ContextRing";
 import { ModelPicker } from "./ModelPicker";
 import { Settings } from "./Settings";
@@ -58,11 +59,37 @@ function stopwatch(): () => number {
   return () => Math.round(performance.now() - startedAt);
 }
 
-const SUGGESTIONS = [
-  "Explain how encrypted inference keeps a prompt private",
-  "Draft a short, friendly out-of-office reply",
-  "Give me three ideas for a weekend side project",
+// Example prompts for the kinds of things people hesitate to type into an
+// ordinary chatbot. A new chat shows one from each group.
+const SUGGESTION_GROUPS = [
+  [
+    "Help me make sense of my blood test results",
+    "Explain a diagnosis I was given, in plain language",
+    "Help me prepare questions for a doctor's appointment",
+    "Help me think through a mental health concern",
+  ],
+  [
+    "Review my monthly budget and find savings",
+    "Explain my payslip and tax deductions",
+    "Help me compare two loan offers",
+    "Check my plan for paying down debt",
+  ],
+  [
+    "Summarise a confidential contract and flag the risks",
+    "Draft a reply about a sensitive HR matter",
+    "Review a term sheet before I sign",
+  ],
+  [
+    "What does sovereign AI mean?",
+    "Why does European-hosted AI matter?",
+    "How does encrypted inference keep my data private?",
+    "Who can see my data when I use an AI model?",
+  ],
 ];
+
+function pickSuggestions(): string[] {
+  return SUGGESTION_GROUPS.map((group) => group[Math.floor(Math.random() * group.length)]);
+}
 
 export function Chat({
   models,
@@ -83,6 +110,8 @@ export function Chat({
   const savedRef = useRef(new Map<string, ChatRecord>());
   const [settings, setSettings] = useState(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [attestationOpen, setAttestationOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState(pickSuggestions);
 
   function changeSettings(next: SettingsValue) {
     setSettings(next);
@@ -291,6 +320,7 @@ export function Chat({
             model,
             search: searchOn && search !== null,
             sampling: settings.sampling,
+            instructions: settings.systemPrompt,
             connectors: settings.connectors
               .filter((connector) => connector.enabled)
               .map(({ name, url, token }) => ({ name, url, token })),
@@ -428,6 +458,7 @@ export function Chat({
   }
 
   function newChat() {
+    setSuggestions(pickSuggestions());
     setActiveId(null);
     setSidebarOpen(false);
     stickRef.current = true;
@@ -705,6 +736,7 @@ export function Chat({
         onDelete={deleteChat}
         onDeleteAll={deleteAllChats}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenAttestation={() => setAttestationOpen(true)}
         onSignOut={signOut}
       />
 
@@ -717,6 +749,8 @@ export function Chat({
           onClose={() => setSettingsOpen(false)}
         />
       )}
+
+      {attestationOpen && <Attestation onClose={() => setAttestationOpen(false)} />}
 
       <main className="relative flex min-w-0 flex-1 flex-col">
         <button
@@ -747,10 +781,26 @@ export function Chat({
                 <p className="mt-2 text-sm text-muted">
                   Prompts and outputs are encrypted end-to-end, powered by Arcium Blackthorn.
                 </p>
+                <button
+                  onClick={() => setAttestationOpen(true)}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs text-muted hover:bg-surface-2 hover:text-text"
+                >
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                    <path
+                      d="M8 1.800l5 1.800v4.200c0 3-2.100 5.300-5 6.400-2.900-1.100-5-3.400-5-6.400V3.600zM5.700 8.100l1.700 1.700 3-3.400"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.3"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  Verify attestation
+                </button>
               </div>
               <div className="mt-7">{composer}</div>
               <div className="mt-4 flex flex-wrap justify-center gap-2">
-                {SUGGESTIONS.map((suggestion) => (
+                {suggestions.map((suggestion) => (
                   <button
                     key={suggestion}
                     onClick={() => send(suggestion)}

@@ -25,8 +25,12 @@ export type Settings = {
   /** Whisper language code for dictation. */
   dictationLanguage: string;
   sampling: Sampling;
+  /** The user's own instructions, added to the assistant's system prompt. */
+  systemPrompt: string;
   connectors: Connector[];
 };
+
+export const MAX_SYSTEM_PROMPT_CHARS = 8000;
 
 export const MAX_CONNECTORS = 5;
 
@@ -38,6 +42,7 @@ export const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   dictationLanguage: "en",
   sampling: { temperature: null, topP: null, topK: null, repetitionPenalty: null },
+  systemPrompt: "",
   connectors: [],
 };
 
@@ -61,6 +66,10 @@ export function loadSettings(): Settings {
         topK: numberOrNull(sampling.topK, 1, 500),
         repetitionPenalty: numberOrNull(sampling.repetitionPenalty, 1, 2),
       },
+      systemPrompt:
+        typeof raw.systemPrompt === "string"
+          ? raw.systemPrompt.slice(0, MAX_SYSTEM_PROMPT_CHARS)
+          : "",
       connectors: Array.isArray(raw.connectors)
         ? raw.connectors
             .filter(

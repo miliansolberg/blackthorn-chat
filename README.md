@@ -38,7 +38,8 @@ Whoever runs this app and the client can therefore see them; the GPU host cannot
 Profile, then Settings:
 
 - **General:** dark or light theme; dictation language (English by default).
-- **Model:** temperature, top-p, top-k and repetition penalty, the sampling
+- **Model:** a custom system prompt (added to the built-in one, which keeps
+  the facts about the app accurate), plus temperature, top-p, top-k and repetition penalty, the sampling
   settings Blackthorn accepts. Each is off by default, which uses the model's
   default (the same answer every time).
 - **Connectors:** remote MCP servers whose tools the model may call
@@ -53,6 +54,22 @@ Profile, then Settings:
 Settings are saved in the browser's localStorage. Chats are saved in the
 browser's IndexedDB (they moved there from localStorage so that an imported
 history fits).
+
+## Attestation
+
+Profile, then Attestation (also linked under the heading on a new chat) runs the
+Blackthorn client's own check, `blackthorn status`, on the app's server
+(`lib/attestation.ts`) and shows the result: host, model, whether the network's
+parties vouch for the GPU's attested session, and the engine key, with a report
+to copy. Limits:
+
+- The check runs on the server, not in the browser.
+- The client prints a summary. It does not output the underlying NVIDIA
+  attestation quote, so there is no raw quote to verify against NVIDIA.
+- To check independently, run `blackthorn status` on your own machine.
+
+Local development can point `BLACKTHORN_BIN` at a `blackthorn` program to
+enable the check; hosted deployments use the bundled client.
 
 ## Web search
 

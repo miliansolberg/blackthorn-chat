@@ -18,8 +18,10 @@ export function Sidebar({
   onDeleteAll,
   onSignOut,
   onOpenSettings,
+  onOpenAttestation,
 }: {
   onOpenSettings: () => void;
+  onOpenAttestation: () => void;
   chats: ChatRecord[];
   activeId: string | null;
   busyId: string | null;
@@ -160,6 +162,7 @@ export function Sidebar({
           onDeleteAll={onDeleteAll}
           onSignOut={onSignOut}
           onOpenSettings={onOpenSettings}
+          onOpenAttestation={onOpenAttestation}
         />
       </aside>
     </>
@@ -185,8 +188,10 @@ function Profile({
   onDeleteAll,
   onSignOut,
   onOpenSettings,
+  onOpenAttestation,
 }: {
   onOpenSettings: () => void;
+  onOpenAttestation: () => void;
   gated: boolean;
   chatCount: number;
   onDeleteAll: () => void;
@@ -234,6 +239,16 @@ function Profile({
             className={itemClass}
           >
             Settings
+          </button>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onOpenAttestation();
+            }}
+            className={itemClass}
+          >
+            Attestation
           </button>
           <button
             role="menuitem"
